@@ -8,11 +8,13 @@ import json
 import sqlalchemy
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from sqlalchemy import Column, Integer, String, Text, DateTime, select, JSON, ForeignKey, join
+from sqlalchemy import Column, Integer, String, Text, DateTime, select, JSON, ForeignKey, join, func
 from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
 import sys
+import logging
+from typing import List, Dict, Tuple, Any, Optional
 
 # 加载环境变量
 load_dotenv()
@@ -81,17 +83,35 @@ templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # 存储活跃的WebSocket连接，及其关联的群聊过滤
-active_connections = []
+active_connections: List[Tuple[WebSocket, Dict[str, Any]]] = []
 
 # 存储活跃连接的群聊过滤设置
 connection_filters = {}
 
 # 存储session_id到group_id的映射缓存
-session_to_group_map = {}
+session_to_group_map: Dict[str, str] = {}
+
+# 统计信息
+stats = {
+    "total_messages_processed": 0,
+    "total_danmaku_sent": 0
+}
 
 @app.get("/", response_class=HTMLResponse)
 async def get_danmaku_page(request: Request):
+    # 打印访问日志，包括查询参数
+    query_params = dict(request.query_params)
+    if 'group' in query_params:
+        print(f"访问弹幕页面，指定监听群聊ID: {query_params['group']}")
+    else:
+        print("访问弹幕页面，未指定监听群聊")
+    
     return templates.TemplateResponse("danmaku.html", {"request": request})
+
+@app.get("/control", response_class=HTMLResponse)
+async def get_control_page(request: Request):
+    print("访问控制面板页面")
+    return templates.TemplateResponse("control.html", {"request": request})
 
 @app.get("/api/groups", response_class=JSONResponse)
 async def get_groups():
@@ -197,237 +217,288 @@ async def get_recent_messages(session_id: str):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    active_connections.append(websocket)
-    # 初始化不过滤任何群聊
-    connection_filters[websocket] = {"groups": [], "filter_enabled": False, "group_ids": []}
+    logging.info("connection open")
+    
+    # 存储每个连接的过滤设置
+    connection_filter = {
+        "enabled": False,
+        "allowed_groups": []
+    }
     
     try:
-        # 发送初始连接成功消息
-        await websocket.send_json({"type": "connection", "message": "连接成功"})
+        active_connections.append((websocket, connection_filter))
         
-        # 保持连接并接收消息
+        # 发送初始连接成功消息
+        await websocket.send_text(json.dumps({"type": "connection", "message": "连接成功"}))
+        
+        # 发送当前连接数量
+        await broadcast_stats()
+        
         while True:
             data = await websocket.receive_text()
             try:
-                # 处理客户端发送的控制消息
-                message_data = json.loads(data)
-                if message_data.get("type") == "command":
-                    if message_data.get("action") == "set_groups":
-                        # 设置要过滤的群聊
-                        groups = message_data.get("groups", [])
-                        filter_enabled = message_data.get("filter_enabled", False)
+                message = json.loads(data)
+                
+                if message["type"] == "command":
+                    if message["action"] == "set_groups":
+                        # 处理过滤设置命令
+                        filter_enabled = message.get("filter_enabled", False)
+                        session_ids = message.get("groups", [])
                         
-                        print(f"收到过滤设置: 启用={filter_enabled}, 群列表={groups}")
+                        print(f"收到过滤设置: 启用={filter_enabled}, 群列表={session_ids}")
                         
-                        # 获取对应的群ID列表
+                        # 将session_id映射到group_id
                         group_ids = []
-                        for session_id in groups:
-                            # 尝试从缓存获取
-                            if session_id in session_to_group_map:
-                                group_id = session_to_group_map[session_id]
+                        for session_id in session_ids:
+                            group_id = await get_group_id_from_session_id(session_id)
+                            if group_id:
                                 group_ids.append(group_id)
-                                print(f"从缓存获取映射: session_id={session_id} -> group_id={group_id}")
-                            else:
-                                # 如果缓存中没有，尝试从数据库获取
-                                async with async_session() as session:
-                                    query = select(SessionModel.id2).where(SessionModel.id == int(session_id))
-                                    result = await session.execute(query)
-                                    group_id = result.scalar_one_or_none()
-                                    if group_id:
-                                        session_to_group_map[session_id] = group_id
-                                        group_ids.append(group_id)
-                                        print(f"从数据库获取映射: session_id={session_id} -> group_id={group_id}")
-                                    else:
-                                        print(f"未找到映射: session_id={session_id}")
                         
-                        connection_filters[websocket] = {
-                            "groups": groups,
-                            "filter_enabled": filter_enabled,
-                            "group_ids": group_ids  # 存储关联的群ID列表
-                        }
+                        connection_filter["enabled"] = filter_enabled
+                        connection_filter["allowed_groups"] = group_ids
                         
-                        print(f"设置过滤: enabled={filter_enabled}, session_ids={groups}, group_ids={group_ids}")
+                        print(f"设置过滤: enabled={connection_filter['enabled']}, session_ids={session_ids}, group_ids={group_ids}")
                         
-                        await websocket.send_json({
-                            "type": "command_response", 
+                        # 发送确认消息
+                        await websocket.send_text(json.dumps({
+                            "type": "command_response",
                             "action": "set_groups",
                             "status": "success",
-                            "message": f"群聊监听已{'启用' if filter_enabled else '禁用'}, 已选择 {len(groups)} 个群",
+                            "message": f"群聊监听已{'启用' if filter_enabled else '禁用'}, 已选择 {len(session_ids)} 个群",
                             "debug_info": {
+                                "session_ids": session_ids,
                                 "group_ids": group_ids
                             }
-                        })
+                        }))
+                    elif message["action"] == "broadcast_settings":
+                        # 处理广播设置命令
+                        settings = message.get("settings", {})
+                        broadcast_message = {
+                            "type": "settings",
+                            "settings": settings
+                        }
+                        # 广播设置到所有连接
+                        await broadcast_to_all(json.dumps(broadcast_message))
+                        # 发送确认消息
+                        await websocket.send_text(json.dumps({
+                            "type": "command_response",
+                            "action": "broadcast_settings",
+                            "status": "success",
+                            "message": "设置已广播到所有客户端"
+                        }))
             except json.JSONDecodeError:
-                pass
+                print("非JSON消息")
             except Exception as e:
-                print(f"处理WebSocket消息时出错: {e}")
-            
+                print(f"处理WebSocket消息时出错: {str(e)}")
+                
     except WebSocketDisconnect:
-        active_connections.remove(websocket)
-        if websocket in connection_filters:
-            del connection_filters[websocket]
+        active_connections.remove((websocket, connection_filter))
+        await broadcast_stats()
+        logging.info("connection closed")
     except Exception as e:
-        print(f"WebSocket连接出错: {e}")
-        if websocket in active_connections:
-            active_connections.remove(websocket)
-        if websocket in connection_filters:
-            del connection_filters[websocket]
+        print(f"WebSocket连接错误: {str(e)}")
+        if (websocket, connection_filter) in active_connections:
+            active_connections.remove((websocket, connection_filter))
+            await broadcast_stats()
+        logging.info("connection closed")
 
-# 检查数据库中的新消息并发送到客户端
+@app.get("/api/stats", response_class=JSONResponse)
+async def get_stats():
+    return {
+        "status": "success",
+        "stats": {
+            "active_connections": len(active_connections),
+            "total_messages_processed": stats["total_messages_processed"],
+            "total_danmaku_sent": stats["total_danmaku_sent"]
+        }
+    }
+
+# 处理接收到的消息
 async def check_for_new_messages():
     # 获取数据库中最新消息的时间，避免依赖本地系统时间
     try:
         async with async_session() as session:
-            # 查询最近的一条消息，获取其时间作为起始时间
-            latest_msg_query = (
-                select(MessageRecord.time)
-                .order_by(MessageRecord.time.desc())
-                .limit(1)
-            )
-            result = await session.execute(latest_msg_query)
+            query = select(func.max(MessageRecord.time)).select_from(MessageRecord)
+            result = await session.execute(query)
             latest_time = result.scalar_one_or_none()
             
-            if latest_time:
-                # 使用最新消息时间减去10分钟作为起始时间（不需要转换时区，因为都是数据库时间）
-                last_check_time = latest_time - timedelta(minutes=10)
-                print(f"从数据库获取最新消息时间: {latest_time} (UTC时间)")
-                print(f"设置初始查询时间为: {last_check_time} (UTC时间)")
+            if latest_time is None:
+                print("数据库中没有消息，使用当前时间")
+                # 如果数据库为空，使用当前时间
+                initial_check_time = datetime.utcnow() - timedelta(hours=1)
             else:
-                # 如果没有消息，使用一个较早的时间，需要转换为UTC时间
-                now_utc = datetime.now() - timedelta(hours=8)  # 东八区转UTC
-                last_check_time = now_utc - timedelta(days=1)  # 过去24小时
-                print(f"数据库无消息，设置初始查询时间为: {last_check_time} (UTC时间)")
+                print(f"数据库最新消息时间: {latest_time} (UTC时间)")
+                # 使用数据库中最新消息的时间作为起始检查时间
+                initial_check_time = latest_time
     except Exception as e:
-        print(f"获取初始时间出错: {e}")
-        # 默认使用一个较早的时间，转换为UTC
-        now_utc = datetime.now() - timedelta(hours=8)  # 东八区转UTC
-        last_check_time = now_utc - timedelta(hours=1)
-        print(f"使用默认初始查询时间: {last_check_time} (UTC时间)")
+        print(f"获取最新消息时间出错: {e}")
+        # 如果查询出错，使用当前时间
+        initial_check_time = datetime.utcnow() - timedelta(hours=1)
     
-    print(f"开始监听新消息，初始时间: {last_check_time} (UTC时间)")
+    last_check_time = initial_check_time
+    print(f"初始检查时间设置为: {last_check_time} (UTC时间)")
     
     while True:
         try:
-            # 获取当前UTC时间（从东八区转换）
-            current_time_utc = datetime.now() - timedelta(hours=8)
-            print(f"当前系统时间: {datetime.now()} (东八区), 转换为UTC: {current_time_utc}")
+            # 输出当前系统时间（东八区）和转换后的UTC时间，用于调试
+            local_now = datetime.now()
+            utc_now = datetime.utcnow()
+            print(f"当前系统时间: {local_now} (东八区), 转换为UTC: {utc_now}")
+            
+            # 查询自上次检查以来的新消息
             print(f"查询 {last_check_time} 之后的消息")
             
-            # 查询新消息
             async with async_session() as session:
-                # 查询最近的一条消息，确认数据库中的最新时间
-                latest_check = (
-                    select(MessageRecord.time)
-                    .order_by(MessageRecord.time.desc())
-                    .limit(1)
-                )
-                latest_result = await session.execute(latest_check)
-                db_latest_time = latest_result.scalar_one_or_none()
+                # 先查询最新的消息时间，用于后续更新last_check_time
+                latest_time_query = select(func.max(MessageRecord.time)).select_from(MessageRecord)
+                latest_time_result = await session.execute(latest_time_query)
+                db_latest_time = latest_time_result.scalar_one_or_none()
                 
                 if db_latest_time:
                     print(f"数据库最新消息时间: {db_latest_time} (UTC时间)")
-            
-                # 获取群聊消息 (level=2 代表群聊)
-                query = (
-                    select(MessageRecord, SessionModel)
-                    .join(SessionModel, MessageRecord.session_persist_id == SessionModel.id)
-                    .where(
-                        MessageRecord.time > last_check_time,
-                        MessageRecord.type == "message",
-                        MessageRecord.plain_text != "",  # 只获取有文本内容的消息
-                        SessionModel.level == 2  # 只获取群聊消息
-                    )
-                    .order_by(MessageRecord.time)
-                )
+                
+                # 查询新消息
+                query = select(MessageRecord, SessionModel).join(
+                    SessionModel, MessageRecord.session_persist_id == SessionModel.id
+                ).where(
+                    MessageRecord.time > last_check_time
+                ).order_by(MessageRecord.time)
                 
                 result = await session.execute(query)
-                messages = result.all()
+                new_messages = result.fetchall()
                 
-                if messages:
-                    print(f"发现 {len(messages)} 条新消息")
-                    for idx, (msg, _) in enumerate(messages):
-                        local_time = msg.time + timedelta(hours=8)  # 转换为东八区显示
-                        print(f"消息{idx+1}时间: {msg.time} (UTC) / {local_time} (本地), 内容: {msg.plain_text[:30]}...")
-                
-                # 处理并发送新消息
-                for message_record, session_model in messages:
-                    if active_connections:
-                        # 解析消息内容，寻找文本内容
-                        message_content = message_record.plain_text
+                if new_messages:
+                    print(f"发现 {len(new_messages)} 条新消息")
+                    
+                    # 处理每条新消息
+                    for i, (message, session) in enumerate(new_messages):
+                        message_time_utc = message.time
+                        message_time_local = message_time_utc + timedelta(hours=8)  # 转换为东八区时间
                         
-                        # 获取用户和群信息
-                        user_id = session_model.id1
-                        group_id = session_model.id2
-                        session_id = str(session_model.id)
+                        print(f"消息{i+1}时间: {message_time_utc} (UTC) / {message_time_local} (本地), 内容: {message.plain_text[:20]}...")
                         
-                        # 转换为本地时间显示
-                        local_time = message_record.time + timedelta(hours=8)
-                        print(f"处理新消息: 群={group_id}, 用户={user_id}, 时间={message_record.time} (UTC) / {local_time} (本地), 内容={message_content[:20]}...")
+                        # 获取群ID
+                        group_id = session.id2
                         
-                        # 更新缓存
-                        session_to_group_map[session_id] = group_id
+                        # 处理消息内容，移除前缀
+                        content = message.plain_text
+                        # 简单处理一下消息内容，去除可能的前缀
+                        if ": " in content and content.count(": ") == 1:
+                            content = content.split(": ", 1)[1]
+                        elif ":" in content and content.count(":") == 1:
+                            content = content.split(":", 1)[1]
                         
-                        # 构建弹幕数据
-                        danmaku_data = {
-                            "type": "danmaku",
-                            "content": message_content,
-                            "user_id": user_id,
-                            "group_id": group_id,
-                            "session_id": session_id,
-                            "color": "#ffffff",  # 默认白色，也可以基于用户ID设置颜色
-                            "size": 32  # 默认中等大小
-                        }
+                        # 调试打印
+                        print(f"处理新消息: 群={group_id}, 用户={session.id1}, 时间={message_time_utc} (UTC) / {message_time_local} (本地), 内容={content[:20]}...")
                         
-                        # 向所有活跃连接发送弹幕（根据过滤设置）
+                        # 广播消息到所有活跃的WebSocket连接
                         sent_count = 0
-                        for connection in active_connections:
+                        for connection, filter_settings in active_connections:
                             try:
-                                # 检查该连接是否启用了群聊过滤
-                                filters = connection_filters.get(connection, {})
-                                filter_enabled = filters.get("filter_enabled", False)
-                                allowed_group_ids = filters.get("group_ids", [])
+                                # 检查过滤设置
+                                print(f"连接过滤设置: enabled={filter_settings['enabled']}, allowed_groups={filter_settings['allowed_groups']}, 当前消息群ID={group_id}")
                                 
-                                # 打印调试信息
-                                print(f"连接过滤设置: enabled={filter_enabled}, allowed_groups={allowed_group_ids}, 当前消息群ID={group_id}")
-                                
-                                # 如果过滤已启用，但此消息不在允许的群中，则跳过
-                                if filter_enabled and allowed_group_ids and group_id not in allowed_group_ids:
-                                    print(f"消息被过滤: 群ID {group_id} 不在允许列表中 {allowed_group_ids}")
+                                # 如果启用了过滤且当前群ID不在允许列表中，则跳过
+                                if filter_settings['enabled'] and group_id not in filter_settings['allowed_groups']:
+                                    print(f"消息被过滤: 群ID {group_id} 不在允许列表中 {filter_settings['allowed_groups']}")
                                     continue
                                 
-                                await connection.send_json(danmaku_data)
+                                # 发送消息
+                                danmaku_message = {
+                                    "type": "danmaku",
+                                    "group_id": group_id,
+                                    "user_id": session.id1,
+                                    "time": message_time_utc.isoformat(),
+                                    "content": content,
+                                    "message_id": message.message_id
+                                }
+                                
+                                await connection.send_text(json.dumps(danmaku_message))
                                 sent_count += 1
-                                print(f"发送弹幕成功: 群={group_id}, 内容={message_content[:20]}...")
+                                print(f"发送弹幕成功: 群={group_id}, 内容={content[:20]}...")
                             except Exception as e:
-                                print(f"发送消息时出错: {e}")
+                                print(f"发送消息时出错: {str(e)}")
                         
                         print(f"消息已发送给 {sent_count}/{len(active_connections)} 个连接")
-                
-                # 更新最后检查时间
-                if messages:
-                    # 获取最后一条消息的时间加上1毫秒，避免重复获取消息
-                    last_message_time = max(record.time for record, _ in messages)
-                    last_check_time = last_message_time + timedelta(milliseconds=1)
-                    print(f"更新最后检查时间为: {last_check_time} (UTC时间)")
-                else:
-                    # 如果没有新消息，看看是否需要更新检查时间
-                    # 如果当前检查时间太老，更新到更近的时间点
-                    time_diff = current_time_utc - last_check_time
-                    if time_diff > timedelta(minutes=30):  # 如果时间差超过30分钟
-                        last_check_time = current_time_utc - timedelta(minutes=5)  # 更新到更近的时间点
-                        print(f"检查时间过老，更新为: {last_check_time} (UTC时间)")
-                
-            # 等待一段时间后再次检查
-            await asyncio.sleep(1)  # 每秒检查一次
-            
+                    
+                    # 更新最后检查时间（加上1毫秒避免重复获取同一条消息）
+                    # 使用数据库中的最新消息时间，而非本地时间
+                    if db_latest_time:
+                        last_check_time = db_latest_time + timedelta(milliseconds=1)
+                        print(f"更新最后检查时间为: {last_check_time} (UTC时间)")
         except Exception as e:
-            print(f"检查新消息时出错: {e}")
-            await asyncio.sleep(5)  # 出错后等待5秒再尝试
+            print(f"检查新消息时出错: {str(e)}")
+            import traceback
+            traceback.print_exc()
+        
+        # 等待1秒再次检查
+        await asyncio.sleep(1)
+
+# 每30秒发送一次统计信息
+async def send_stats_periodically():
+    while True:
+        try:
+            await broadcast_stats()
+        except Exception as e:
+            print(f"发送统计信息时出错: {str(e)}")
+        await asyncio.sleep(10)
+
+# 广播统计数据给所有连接
+async def broadcast_stats():
+    stats = {
+        "type": "stats",
+        "connections": len(active_connections),
+    }
+    await broadcast_to_all(json.dumps(stats))
+
+# 广播消息给所有连接
+async def broadcast_to_all(message: str):
+    for connection, _ in active_connections:
+        try:
+            await connection.send_text(message)
+        except Exception as e:
+            print(f"广播消息失败: {e}")
+
+# 获取群聊ID
+async def get_group_id_from_session_id(session_id: str) -> Optional[str]:
+    # 尝试从缓存获取
+    if session_id in session_to_group_map:
+        group_id = session_to_group_map[session_id]
+        print(f"从缓存获取映射: session_id={session_id} -> group_id={group_id}")
+        return group_id
+    
+    # 如果缓存中没有，从数据库获取
+    try:
+        async with async_session() as session:
+            query = select(SessionModel.id2).where(SessionModel.id == int(session_id))
+            result = await session.execute(query)
+            group_id = result.scalar_one_or_none()
+            
+            if group_id:
+                session_to_group_map[session_id] = group_id
+                print(f"从数据库获取映射: session_id={session_id} -> group_id={group_id}")
+                return group_id
+            else:
+                print(f"未找到映射: session_id={session_id}")
+                return None
+    except Exception as e:
+        print(f"获取群聊ID出错: {e}")
+        return None
 
 @app.on_event("startup")
 async def startup_event():
     # 启动后台任务检查新消息
     asyncio.create_task(check_for_new_messages())
+    # 启动后台任务发送统计信息
+    asyncio.create_task(send_stats_periodically())
+    # 打印应用信息和链接
+    print("\n" + "="*50)
+    print("群聊弹幕系统已启动")
+    print("="*50)
+    print("\n弹幕页面: http://localhost:8000")
+    print("控制面板: http://localhost:8000/control")
+    print("\n使用控制面板选择要监听的群聊，或者直接使用以下格式访问特定群聊的弹幕：")
+    print("http://localhost:8000/?group=群ID\n")
 
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True) 

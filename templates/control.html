@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>弹幕系统控制台</title>
+    <style>
+        :root {
+            /* 亮色模式变量 */
+            --bg-color: #f5f5f5;
+            --card-bg: white;
+            --text-color: #333;
+            --border-color: #ddd;
+            --primary-color: #4caf50;
+            --primary-hover: #388e3c;
+            --secondary-color: #2196f3;
+            --secondary-hover: #1976d2;
+            --danger-color: #f44336;
+            --danger-hover: #d32f2f;
+            --header-color: #333;
+            --muted-color: #757575;
+            --debug-bg: #263238;
+            --debug-text: #eee;
+            --debug-border: #455a64;
+            --timestamp-color: #80deea;
+            --shadow-color: rgba(0, 0, 0, 0.1);
+            --stat-value-color: #2196f3;
+        }
+        
+        @media (prefers-color-scheme: dark) {
+            :root {
+                /* 深色模式变量 */
+                --bg-color: #121212;
+                --card-bg: #1e1e1e;
+                --text-color: #e0e0e0;
+                --border-color: #333;
+                --primary-color: #66bb6a;
+                --primary-hover: #4caf50;
+                --secondary-color: #42a5f5;
+                --secondary-hover: #2196f3;
+                --danger-color: #ef5350;
+                --danger-hover: #f44336;
+                --header-color: #e0e0e0;
+                --muted-color: #9e9e9e;
+                --debug-bg: #1a1a1a;
+                --debug-text: #e0e0e0;
+                --debug-border: #333;
+                --timestamp-color: #4fc3f7;
+                --shadow-color: rgba(0, 0, 0, 0.4);
+                --stat-value-color: #42a5f5;
+            }
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', 'Helvetica Neue', Ubuntu, 'Noto Sans', 'Source Han Sans CN', 'Source Han Sans SC', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .card {
+            background-color: var(--card-bg);
+            border-radius: 8px;
+            box-shadow: 0 2px 10px var(--shadow-color);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        h1, h2, h3 {
+            margin-top: 0;
+            color: var(--header-color);
+        }
+        
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-weight: bold;
+            background-color: var(--danger-color);
+            color: white;
+        }
+        
+        .status-indicator.connected {
+            background-color: var(--primary-color);
+        }
+        
+        select, input, button {
+            padding: 8px 12px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            margin: 5px 0;
+            background-color: var(--card-bg);
+            color: var(--text-color);
+        }
+        
+        select {
+            width: 100%;
+            max-height: 150px;
+        }
+        
+        button {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            cursor: pointer;
+            margin-right: 10px;
+            transition: background-color 0.3s;
+        }
+        
+        button:hover {
+            background-color: var(--primary-hover);
+        }
+        
+        button.secondary {
+            background-color: var(--secondary-color);
+        }
+        
+        button.secondary:hover {
+            background-color: var(--secondary-hover);
+        }
+        
+        button.danger {
+            background-color: var(--danger-color);
+        }
+        
+        button.danger:hover {
+            background-color: var(--danger-hover);
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        
+        .debug-panel {
+            background-color: var(--debug-bg);
+            color: var(--debug-text);
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            height: 300px;
+            overflow-y: auto;
+        }
+        
+        .debug-message {
+            margin: 5px 0;
+            border-bottom: 1px solid var(--debug-border);
+            padding-bottom: 5px;
+        }
+        
+        .timestamp {
+            color: var(--timestamp-color);
+            margin-right: 10px;
+        }
+        
+        .preview-frame {
+            width: 100%;
+            height: 300px;
+            border: none;
+            border-radius: 4px;
+            background-color: #000;
+        }
+        
+        .stats {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        
+        .stat-card {
+            flex: 1;
+            background-color: var(--card-bg);
+            border-radius: 8px;
+            box-shadow: 0 2px 5px var(--shadow-color);
+            padding: 15px;
+            margin: 0 10px;
+            text-align: center;
+        }
+        
+        .stat-card:first-child {
+            margin-left: 0;
+        }
+        
+        .stat-card:last-child {
+            margin-right: 0;
+        }
+        
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 10px 0;
+            color: var(--stat-value-color);
+        }
+        
+        .stat-label {
+            font-size: 14px;
+            color: var(--muted-color);
+        }
+        
+        .theme-toggle {
+            margin-left: 10px;
+            display: flex;
+            align-items: center;
+        }
+        
+        .theme-toggle label {
+            margin: 0 10px 0 0;
+            font-weight: normal;
+        }
+        
+        .theme-toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 24px;
+        }
+        
+        .theme-toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        .switch-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 24px;
+        }
+        
+        .switch-slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        
+        input:checked + .switch-slider {
+            background-color: var(--primary-color);
+        }
+        
+        input:checked + .switch-slider:before {
+            transform: translateX(26px);
+        }
+        
+        .theme-icon {
+            margin-left: 5px;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header" style="grid-column: 1 / -1;">
+            <h1>群聊弹幕系统控制台</h1>
+            <div style="display: flex; align-items: center;">
+                <div class="status-indicator" id="connection-status">未连接</div>
+                <div class="theme-toggle">
+                    <label for="theme-switch">深色模式</label>
+                    <label class="theme-toggle-switch">
+                        <input type="checkbox" id="theme-switch">
+                        <span class="switch-slider"></span>
+                    </label>
+                    <span class="theme-icon">🌓</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="stats" style="grid-column: 1 / -1;">
+            <div class="stat-card">
+                <div class="stat-label">活跃连接数</div>
+                <div class="stat-value" id="active-connections">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">当前弹幕数</div>
+                <div class="stat-value" id="active-danmaku">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">消息接收速率</div>
+                <div class="stat-value" id="message-rate">0/分钟</div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>群聊选择</h2>
+            <div class="form-group">
+                <select id="group-select" size="10">
+                    <option value="loading">加载中...</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <button id="refresh-groups">刷新群列表</button>
+                <button id="enable-filter" class="secondary">监听该群</button>
+                <button id="show-recent" class="secondary">显示最近消息</button>
+            </div>
+            <div id="group-filter-status">当前未监听任何群聊</div>
+        </div>
+        
+        <div class="card">
+            <h2>弹幕预览</h2>
+            <iframe id="preview-frame" class="preview-frame" src="about:blank"></iframe>
+            <div class="form-group" style="margin-top: 15px;">
+                <button id="open-fullscreen">在新窗口打开弹幕</button>
+                <button id="clear-danmaku" class="danger">清空弹幕</button>
+            </div>
+            <div class="form-group">
+                <div style="display: flex; align-items: center;">
+                    <input type="text" id="danmaku-url" readonly style="flex: 1; margin-right: 10px;" />
+                    <button id="copy-url" style="flex-shrink: 0;">复制链接</button>
+                </div>
+                <div id="copy-status" style="font-size: 12px; margin-top: 5px; color: var(--primary-color); display: none;">链接已复制到剪贴板</div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>弹幕设置</h2>
+            <div class="form-group">
+                <label for="animation-method">动画方式：</label>
+                <select id="animation-method">
+                    <option value="transform">Transform (GPU加速)</option>
+                    <option value="left">Left (传统方式)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="max-danmaku">最大弹幕数：</label>
+                <input type="number" id="max-danmaku" value="50" min="10" max="200">
+            </div>
+            <div class="form-group">
+                <label for="font-size">默认字体大小：</label>
+                <input type="number" id="font-size" value="32" min="16" max="48">
+            </div>
+            <div class="form-group">
+                <button id="apply-settings">应用设置</button>
+                <button id="connect-ws" class="secondary">重新连接</button>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>调试信息</h2>
+            <div class="debug-panel" id="debug-panel">
+                <div class="debug-message">
+                    <span class="timestamp">[00:00:00]</span>
+                    <span>系统初始化...</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 元素引用
+        const connectionStatus = document.getElementById('connection-status');
+        const activeConnectionsEl = document.getElementById('active-connections');
+        const activeDanmakuEl = document.getElementById('active-danmaku');
+        const messageRateEl = document.getElementById('message-rate');
+        const groupSelect = document.getElementById('group-select');
+        const refreshGroupsButton = document.getElementById('refresh-groups');
+        const enableFilterButton = document.getElementById('enable-filter');
+        const showRecentButton = document.getElementById('show-recent');
+        const groupFilterStatus = document.getElementById('group-filter-status');
+        const previewFrame = document.getElementById('preview-frame');
+        const openFullscreenButton = document.getElementById('open-fullscreen');
+        const clearDanmakuButton = document.getElementById('clear-danmaku');
+        const animationMethod = document.getElementById('animation-method');
+        const maxDanmakuInput = document.getElementById('max-danmaku');
+        const fontSizeInput = document.getElementById('font-size');
+        const applySettingsButton = document.getElementById('apply-settings');
+        const connectButton = document.getElementById('connect-ws');
+        const debugPanel = document.getElementById('debug-panel');
+        const themeSwitch = document.getElementById('theme-switch');
+        
+        // 状态变量
+        let socket = null;
+        let isConnected = false;
+        let groupsData = [];
+        let filterEnabled = false;
+        let selectedGroupId = null;
+        let messageCount = 0;
+        let lastMessageTime = Date.now();
+        let messageRateInterval;
+        let latestMessages = new Set(); // 使用Set存储最近消息ID，防止重复
+        let isPreviewReady = false; // 预览框是否准备好接收消息
+        
+        // 初始化
+        function init() {
+            // 初始化深色模式
+            initTheme();
+            
+            // 设置预览框URL
+            updatePreviewFrame();
+            
+            // 启动消息速率计算
+            messageRateInterval = setInterval(updateMessageRate, 5000);
+            
+            // 加载群聊列表
+            loadGroups();
+            
+            // 连接WebSocket
+            connectWebSocket();
+            
+            // 添加调试信息
+            addDebugMessage("控制台初始化完成");
+            
+            // 监听预览框是否准备好接收消息
+            window.addEventListener('message', function(event) {
+                if (event.data && event.data.type === 'previewReady') {
+                    isPreviewReady = true;
+                    addDebugMessage("预览框准备就绪");
+                }
+                
+                if (event.data && event.data.type === 'danmakuStats') {
+                    activeDanmakuEl.textContent = event.data.count || 0;
+                }
+            });
+        }
+        
+        // 初始化主题
+        function initTheme() {
+            // 检查系统偏好
+            const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+            
+            // 检查本地存储中的设置
+            const savedTheme = localStorage.getItem('theme');
+            
+            // 如果有保存的主题设置，使用它，否则使用系统偏好
+            const isDarkMode = savedTheme ? savedTheme === 'dark' : prefersDark;
+            
+            // 设置复选框状态
+            themeSwitch.checked = isDarkMode;
+            
+            // 应用主题
+            if (isDarkMode) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            } else {
+                document.documentElement.removeAttribute('data-theme');
+            }
+            
+            // 监听系统主题变化
+            const darkModeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+            if (darkModeMediaQuery.addEventListener) {
+                darkModeMediaQuery.addEventListener('change', (e) => {
+                    if (localStorage.getItem('theme') === null) { // 只有在用户没有手动设置主题时才响应系统变化
+                        themeSwitch.checked = e.matches;
+                        document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+                    }
+                });
+            }
+            
+            // 监听主题切换
+            themeSwitch.addEventListener('change', function() {
+                if (this.checked) {
+                    document.documentElement.setAttribute('data-theme', 'dark');
+                    localStorage.setItem('theme', 'dark');
+                } else {
+                    document.documentElement.removeAttribute('data-theme');
+                    localStorage.setItem('theme', 'light');
+                }
+            });
+        }
+        
+        // 更新预览框
+        function updatePreviewFrame() {
+            const baseUrl = window.location.origin;
+            let previewUrl = `${baseUrl}`;
+            
+            if (selectedGroupId) {
+                previewUrl += `?group=${selectedGroupId}`;
+            }
+            
+            previewFrame.src = previewUrl;
+            document.getElementById('danmaku-url').value = previewUrl;
+            addDebugMessage(`预览框URL更新为: ${previewUrl}`);
+            
+            // 重置预览框状态
+            isPreviewReady = false;
+        }
+        
+        // 在新窗口打开弹幕
+        openFullscreenButton.addEventListener('click', () => {
+            const baseUrl = window.location.origin;
+            let fullscreenUrl = baseUrl;
+            
+            if (selectedGroupId) {
+                fullscreenUrl += `?group=${selectedGroupId}`;
+            }
+            
+            window.open(fullscreenUrl, '_blank', 'width=1280,height=720');
+            addDebugMessage(`在新窗口打开弹幕: ${fullscreenUrl}`);
+        });
+        
+        // 清空弹幕
+        clearDanmakuButton.addEventListener('click', () => {
+            if (previewFrame.contentWindow) {
+                previewFrame.contentWindow.postMessage({action: 'clearDanmaku'}, '*');
+                addDebugMessage("已发送清空弹幕命令");
+                
+                // 清空最近消息记录
+                latestMessages.clear();
+            }
+        });
+        
+        // 应用设置
+        applySettingsButton.addEventListener('click', () => {
+            const settings = {
+                animationMethod: animationMethod.value,
+                maxDanmaku: parseInt(maxDanmakuInput.value),
+                fontSize: parseInt(fontSizeInput.value)
+            };
+            
+            if (previewFrame.contentWindow) {
+                previewFrame.contentWindow.postMessage({action: 'applySettings', settings}, '*');
+                addDebugMessage(`已应用设置: ${JSON.stringify(settings)}`);
+            }
+            
+            // 如果有其他活跃的弹幕窗口，也发送设置
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({
+                    type: 'command',
+                    action: 'broadcast_settings',
+                    settings: settings
+                }));
+                addDebugMessage("已向所有连接的客户端广播设置");
+            }
+        });
+        
+        // 更新消息速率
+        function updateMessageRate() {
+            const now = Date.now();
+            const elapsed = (now - lastMessageTime) / 1000; // 秒
+            
+            if (elapsed > 0) {
+                const rate = Math.round((messageCount / elapsed) * 60); // 每分钟
+                messageRateEl.textContent = `${rate}/分钟`;
+                
+                // 重置计数器
+                messageCount = 0;
+                lastMessageTime = now;
+            }
+        }
+        
+        // 加载群聊列表
+        async function loadGroups() {
+            try {
+                groupSelect.innerHTML = '<option value="loading">加载中...</option>';
+                addDebugMessage("正在加载群聊列表...");
+                
+                const response = await fetch('/api/groups');
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    groupsData = data.groups;
+                    
+                    if (groupsData.length === 0) {
+                        groupSelect.innerHTML = '<option value="none" disabled>没有找到群聊</option>';
+                        addDebugMessage("未找到任何群聊");
+                        return;
+                    }
+                    
+                    // 填充选项
+                    groupSelect.innerHTML = '';
+                    groupsData.forEach(group => {
+                        const option = document.createElement('option');
+                        option.value = group.id;
+                        option.textContent = `群 ${group.group_id}`;
+                        groupSelect.appendChild(option);
+                    });
+                    
+                    // 默认选中第一个
+                    if (groupSelect.options.length > 0) {
+                        groupSelect.selectedIndex = 0;
+                        selectedGroupId = groupSelect.options[0].value;
+                    }
+                    
+                    updateFilterStatus();
+                    addDebugMessage(`成功加载 ${groupsData.length} 个群聊`);
+                } else {
+                    groupSelect.innerHTML = '<option value="error" disabled>加载失败</option>';
+                    addDebugMessage(`加载群聊列表失败: ${data.message}`);
+                }
+            } catch (error) {
+                groupSelect.innerHTML = '<option value="error" disabled>加载失败</option>';
+                addDebugMessage(`加载群聊列表错误: ${error.message}`);
+            }
+        }
+        
+        // 显示最近消息
+        async function showRecentMessages() {
+            if (!selectedGroupId) {
+                alert('请先选择一个群聊');
+                return;
+            }
+            
+            try {
+                addDebugMessage(`正在获取群 ${selectedGroupId} 的最近消息...`);
+                
+                const response = await fetch(`/api/recent-messages/${selectedGroupId}`);
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    if (data.messages.length === 0) {
+                        alert('该群没有最近消息');
+                        groupFilterStatus.textContent = '该群没有最近消息';
+                        addDebugMessage("该群没有最近消息");
+                    } else {
+                        groupFilterStatus.textContent = `已显示群 ${data.messages[0].group_id} 的最近 ${data.messages.length} 条消息`;
+                        addDebugMessage(`成功获取 ${data.messages.length} 条最近消息`);
+                        
+                        // 清空最近消息记录
+                        latestMessages.clear();
+                        
+                        // 向预览框发送消息
+                        if (isPreviewReady && previewFrame.contentWindow) {
+                            previewFrame.contentWindow.postMessage({
+                                action: 'showRecentMessages',
+                                messages: data.messages
+                            }, '*');
+                        } else {
+                            // 如果预览框还没准备好，等待一段时间再发送
+                            setTimeout(() => {
+                                if (previewFrame.contentWindow) {
+                                    previewFrame.contentWindow.postMessage({
+                                        action: 'showRecentMessages',
+                                        messages: data.messages
+                                    }, '*');
+                                }
+                            }, 1000);
+                        }
+                        
+                        // 记录这些消息的ID，防止重复
+                        data.messages.forEach(msg => {
+                            if (msg.message_id) {
+                                latestMessages.add(msg.message_id);
+                            }
+                        });
+                    }
+                } else {
+                    alert('获取最近消息失败: ' + data.message);
+                    groupFilterStatus.textContent = '获取最近消息失败: ' + data.message;
+                    addDebugMessage(`获取最近消息失败: ${data.message}`);
+                }
+            } catch (error) {
+                addDebugMessage(`获取最近消息错误: ${error.message}`);
+                alert('获取最近消息出错，详情请查看控制台');
+                groupFilterStatus.textContent = '获取最近消息出错';
+            }
+        }
+        
+        // 更新过滤状态显示
+        function updateFilterStatus() {
+            if (!filterEnabled) {
+                groupFilterStatus.textContent = '当前未监听任何群聊';
+                groupFilterStatus.style.color = 'var(--muted-color)';
+            } else if (selectedGroupId) {
+                const selectedGroup = groupsData.find(g => g.id === selectedGroupId);
+                if (selectedGroup) {
+                    groupFilterStatus.textContent = `正在监听群 ${selectedGroup.group_id} 的消息`;
+                    groupFilterStatus.style.color = 'var(--primary-color)';
+                }
+            } else {
+                groupFilterStatus.textContent = '警告：已启用监听但未选择任何群！';
+                groupFilterStatus.style.color = 'var(--danger-color)';
+            }
+        }
+        
+        // 发送过滤设置到服务器
+        function sendFilterSettings() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                addDebugMessage('WebSocket未连接，无法发送过滤设置');
+                return;
+            }
+            
+            socket.send(JSON.stringify({
+                type: 'command',
+                action: 'set_groups',
+                groups: selectedGroupId ? [selectedGroupId] : [],
+                filter_enabled: filterEnabled
+            }));
+            
+            updateFilterStatus();
+            updatePreviewFrame();
+            addDebugMessage(`发送过滤设置: 启用=${filterEnabled}, 群ID=${selectedGroupId || '无'}`);
+        }
+        
+        // 启用监听
+        enableFilterButton.addEventListener('click', () => {
+            filterEnabled = true;
+            selectedGroupId = groupSelect.value;
+            if (selectedGroupId === 'loading' || selectedGroupId === 'error' || selectedGroupId === 'none') {
+                selectedGroupId = null;
+            }
+            sendFilterSettings();
+        });
+        
+        // 显示最近消息
+        showRecentButton.addEventListener('click', () => {
+            selectedGroupId = groupSelect.value;
+            if (selectedGroupId === 'loading' || selectedGroupId === 'error' || selectedGroupId === 'none') {
+                alert('请选择有效的群聊');
+                return;
+            }
+            showRecentMessages();
+        });
+        
+        // 选择改变时更新选中的群聊ID
+        groupSelect.addEventListener('change', () => {
+            selectedGroupId = groupSelect.value;
+            if (selectedGroupId === 'loading' || selectedGroupId === 'error' || selectedGroupId === 'none') {
+                selectedGroupId = null;
+            }
+            if (filterEnabled) {
+                sendFilterSettings();
+            }
+            updateFilterStatus();
+        });
+        
+        // 刷新群列表
+        refreshGroupsButton.addEventListener('click', loadGroups);
+        
+        // 复制链接按钮
+        document.getElementById('copy-url').addEventListener('click', () => {
+            const urlInput = document.getElementById('danmaku-url');
+            urlInput.select();
+            document.execCommand('copy');
+            
+            // 显示复制成功提示
+            const copyStatus = document.getElementById('copy-status');
+            copyStatus.style.display = 'block';
+            setTimeout(() => {
+                copyStatus.style.display = 'none';
+            }, 2000);
+            
+            addDebugMessage('弹幕链接已复制到剪贴板');
+        });
+        
+        // 添加调试信息
+        function addDebugMessage(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            const msgElement = document.createElement('div');
+            msgElement.className = 'debug-message';
+            msgElement.innerHTML = `<span class="timestamp">[${timestamp}]</span><span>${message}</span>`;
+            debugPanel.appendChild(msgElement);
+            
+            // 只保留最新的50条消息
+            while (debugPanel.children.length > 50) {
+                debugPanel.removeChild(debugPanel.firstChild);
+            }
+            
+            // 自动滚动到底部
+            debugPanel.scrollTop = debugPanel.scrollHeight;
+        }
+        
+        // WebSocket连接
+        function connectWebSocket() {
+            // 关闭现有连接
+            if (socket) {
+                socket.close();
+            }
+            
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            
+            addDebugMessage(`正在连接到 ${wsUrl}`);
+            
+            socket = new WebSocket(wsUrl);
+            
+            socket.onopen = function(e) {
+                isConnected = true;
+                connectionStatus.textContent = "已连接";
+                connectionStatus.classList.add('connected');
+                
+                addDebugMessage("WebSocket连接成功");
+                
+                // 连接后发送当前的过滤设置
+                if (filterEnabled) {
+                    sendFilterSettings();
+                }
+            };
+            
+            socket.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === "command_response") {
+                        // 处理命令响应
+                        addDebugMessage(`命令响应: ${data.message}`);
+                        if (data.debug_info) {
+                            addDebugMessage(`群ID: ${JSON.stringify(data.debug_info.group_ids)}`);
+                        }
+                    } else if (data.type === "danmaku") {
+                        // 处理弹幕消息
+                        // 检查消息是否已经处理过
+                        if (data.message_id && latestMessages.has(data.message_id)) {
+                            addDebugMessage(`跳过重复消息: ${data.content.substring(0, 15)}...`);
+                            return;
+                        }
+                        
+                        // 记录消息ID，防止重复处理
+                        if (data.message_id) {
+                            latestMessages.add(data.message_id);
+                        }
+                        
+                        addDebugMessage(`弹幕: ${data.content.substring(0, 15)}...`);
+                        
+                        // 更新消息计数
+                        messageCount++;
+                        
+                        // 转发到预览框
+                        if (isPreviewReady && previewFrame.contentWindow) {
+                            previewFrame.contentWindow.postMessage({
+                                action: 'newDanmaku',
+                                message: data
+                            }, '*');
+                        }
+                    } else if (data.type === "connection") {
+                        // 处理连接消息
+                        addDebugMessage(`连接消息: ${data.message}`);
+                    } else if (data.type === "stats") {
+                        // 处理统计信息
+                        activeConnectionsEl.textContent = data.connections || 0;
+                    }
+                } catch (e) {
+                    addDebugMessage(`处理消息时出错: ${e.message}`);
+                }
+            };
+            
+            socket.onclose = function(event) {
+                if (event.wasClean) {
+                    addDebugMessage(`连接已关闭: ${event.reason || '无原因'}`);
+                } else {
+                    addDebugMessage("连接意外中断");
+                }
+                isConnected = false;
+                connectionStatus.textContent = "已断开";
+                connectionStatus.classList.remove('connected');
+                
+                // 5秒后自动尝试重连
+                setTimeout(connectWebSocket, 5000);
+            };
+            
+            socket.onerror = function(error) {
+                addDebugMessage("WebSocket错误");
+                connectionStatus.textContent = "连接错误";
+                connectionStatus.classList.remove('connected');
+            };
+        }
+        
+        // 重新连接按钮
+        connectButton.addEventListener('click', connectWebSocket);
+        
+        // 初始化
+        init();
+    </script>
+</body>
+</html> 
