@@ -12,6 +12,7 @@
             --text-color: #333;
             --border-color: #ddd;
             --primary-color: #4caf50;
+            --primary-color-rgb: 76, 175, 80;
             --primary-hover: #388e3c;
             --secondary-color: #2196f3;
             --secondary-hover: #1976d2;
@@ -35,6 +36,7 @@
                 --text-color: #e0e0e0;
                 --border-color: #333;
                 --primary-color: #66bb6a;
+                --primary-color-rgb: 102, 187, 106;
                 --primary-hover: #4caf50;
                 --secondary-color: #42a5f5;
                 --secondary-hover: #2196f3;
@@ -284,6 +286,105 @@
             margin-left: 5px;
             font-size: 16px;
         }
+        
+        /* 群聊列表样式 */
+        .search-box {
+            display: flex;
+            margin-bottom: 10px;
+        }
+        
+        .search-box input {
+            flex: 1;
+            margin-right: 10px;
+        }
+        
+        .group-tabs {
+            display: flex;
+            margin-bottom: 10px;
+        }
+        
+        .tab-button {
+            flex: 1;
+            padding: 8px;
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            cursor: pointer;
+        }
+        
+        .tab-button.active {
+            background-color: var(--primary-color);
+            color: white;
+            border-color: var(--primary-color);
+        }
+        
+        .group-list-container {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+        }
+        
+        .group-list {
+            padding: 5px;
+        }
+        
+        .group-item {
+            padding: 10px;
+            border-bottom: 1px solid var(--border-color);
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        
+        .group-item:last-child {
+            border-bottom: none;
+        }
+        
+        .group-item:hover {
+            background-color: rgba(0, 0, 0, 0.05);
+        }
+        
+        .group-item.selected {
+            background-color: rgba(var(--primary-color-rgb), 0.1);
+            border-left: 3px solid var(--primary-color);
+        }
+        
+        .group-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .group-name {
+            font-weight: bold;
+        }
+        
+        .group-actions {
+            display: flex;
+        }
+        
+        .action-button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+            padding: 2px 5px;
+            margin-left: 5px;
+            border-radius: 3px;
+        }
+        
+        .action-button:hover {
+            background-color: rgba(0, 0, 0, 0.1);
+        }
+        
+        .loading-indicator, .empty-message, .error-message {
+            padding: 20px;
+            text-align: center;
+            color: var(--muted-color);
+        }
+        
+        .error-message {
+            color: var(--danger-color);
+        }
     </style>
 </head>
 <body>
@@ -292,14 +393,6 @@
             <h1>群聊弹幕系统控制台</h1>
             <div style="display: flex; align-items: center;">
                 <div class="status-indicator" id="connection-status">未连接</div>
-                <div class="theme-toggle">
-                    <label for="theme-switch">深色模式</label>
-                    <label class="theme-toggle-switch">
-                        <input type="checkbox" id="theme-switch">
-                        <span class="switch-slider"></span>
-                    </label>
-                    <span class="theme-icon">🌓</span>
-                </div>
             </div>
         </div>
         
@@ -321,13 +414,20 @@
         <div class="card">
             <h2>群聊选择</h2>
             <div class="form-group">
-                <select id="group-select" size="10">
-                    <option value="loading">加载中...</option>
-                </select>
+                <div class="search-box">
+                    <input type="text" id="group-search" placeholder="搜索群聊..." />
+                    <button id="refresh-groups" class="secondary">刷新群列表</button>
+                </div>
+                <div class="group-tabs">
+                    <button class="tab-button active" data-tab="all">全部群聊</button>
+                    <button class="tab-button" data-tab="favorites">常用群聊</button>
+                </div>
+                <div class="group-list-container">
+                    <div id="group-list" class="group-list"></div>
+                </div>
             </div>
             <div class="form-group">
-                <button id="refresh-groups">刷新群列表</button>
-                <button id="enable-filter" class="secondary">监听该群</button>
+                <button id="enable-filter" class="primary">监听该群</button>
                 <button id="show-recent" class="secondary">显示最近消息</button>
             </div>
             <div id="group-filter-status">当前未监听任何群聊</div>
@@ -389,7 +489,8 @@
         const activeConnectionsEl = document.getElementById('active-connections');
         const activeDanmakuEl = document.getElementById('active-danmaku');
         const messageRateEl = document.getElementById('message-rate');
-        const groupSelect = document.getElementById('group-select');
+        const groupSearch = document.getElementById('group-search');
+        const groupList = document.getElementById('group-list');
         const refreshGroupsButton = document.getElementById('refresh-groups');
         const enableFilterButton = document.getElementById('enable-filter');
         const showRecentButton = document.getElementById('show-recent');
@@ -403,7 +504,7 @@
         const applySettingsButton = document.getElementById('apply-settings');
         const connectButton = document.getElementById('connect-ws');
         const debugPanel = document.getElementById('debug-panel');
-        const themeSwitch = document.getElementById('theme-switch');
+        const tabButtons = document.querySelectorAll('.tab-button');
         
         // 状态变量
         let socket = null;
@@ -416,12 +517,10 @@
         let messageRateInterval;
         let latestMessages = new Set(); // 使用Set存储最近消息ID，防止重复
         let isPreviewReady = false; // 预览框是否准备好接收消息
+        let currentTab = 'all'; // 当前选中的标签页
         
         // 初始化
         function init() {
-            // 初始化深色模式
-            initTheme();
-            
             // 设置预览框URL
             updatePreviewFrame();
             
@@ -497,15 +596,9 @@
         // 更新预览框
         function updatePreviewFrame() {
             const baseUrl = window.location.origin;
-            let previewUrl = `${baseUrl}`;
-            
-            if (selectedGroupId) {
-                previewUrl += `?group=${selectedGroupId}`;
-            }
-            
-            previewFrame.src = previewUrl;
-            document.getElementById('danmaku-url').value = previewUrl;
-            addDebugMessage(`预览框URL更新为: ${previewUrl}`);
+            previewFrame.src = baseUrl;
+            document.getElementById('danmaku-url').value = baseUrl;
+            addDebugMessage(`预览框URL更新为: ${baseUrl}`);
             
             // 重置预览框状态
             isPreviewReady = false;
@@ -514,14 +607,8 @@
         // 在新窗口打开弹幕
         openFullscreenButton.addEventListener('click', () => {
             const baseUrl = window.location.origin;
-            let fullscreenUrl = baseUrl;
-            
-            if (selectedGroupId) {
-                fullscreenUrl += `?group=${selectedGroupId}`;
-            }
-            
-            window.open(fullscreenUrl, '_blank', 'width=1280,height=720');
-            addDebugMessage(`在新窗口打开弹幕: ${fullscreenUrl}`);
+            window.open(baseUrl, '_blank', 'width=1280,height=720');
+            addDebugMessage(`在新窗口打开弹幕: ${baseUrl}`);
         });
         
         // 清空弹幕
@@ -577,7 +664,7 @@
         // 加载群聊列表
         async function loadGroups() {
             try {
-                groupSelect.innerHTML = '<option value="loading">加载中...</option>';
+                groupList.innerHTML = '<div class="loading-indicator">加载中...</div>';
                 addDebugMessage("正在加载群聊列表...");
                 
                 const response = await fetch('/api/groups');
@@ -587,36 +674,148 @@
                     groupsData = data.groups;
                     
                     if (groupsData.length === 0) {
-                        groupSelect.innerHTML = '<option value="none" disabled>没有找到群聊</option>';
+                        groupList.innerHTML = '<div class="empty-message">没有找到群聊</div>';
                         addDebugMessage("未找到任何群聊");
                         return;
                     }
                     
-                    // 填充选项
-                    groupSelect.innerHTML = '';
-                    groupsData.forEach(group => {
-                        const option = document.createElement('option');
-                        option.value = group.id;
-                        option.textContent = `群 ${group.group_id}`;
-                        groupSelect.appendChild(option);
-                    });
+                    // 渲染群聊列表
+                    renderGroupList();
                     
-                    // 默认选中第一个
-                    if (groupSelect.options.length > 0) {
-                        groupSelect.selectedIndex = 0;
-                        selectedGroupId = groupSelect.options[0].value;
+                    // 如果有活跃群组，自动选中
+                    if (data.active_group_id) {
+                        const activeGroup = groupsData.find(g => g.group_id === data.active_group_id);
+                        if (activeGroup) {
+                            selectedGroupId = activeGroup.id;
+                            filterEnabled = true;
+                            updateFilterStatus();
+                            addDebugMessage(`自动选中活跃群组: ${activeGroup.group_id}`);
+                        }
                     }
                     
-                    updateFilterStatus();
                     addDebugMessage(`成功加载 ${groupsData.length} 个群聊`);
                 } else {
-                    groupSelect.innerHTML = '<option value="error" disabled>加载失败</option>';
+                    groupList.innerHTML = '<div class="error-message">加载失败</div>';
                     addDebugMessage(`加载群聊列表失败: ${data.message}`);
                 }
             } catch (error) {
-                groupSelect.innerHTML = '<option value="error" disabled>加载失败</option>';
+                groupList.innerHTML = '<div class="error-message">加载失败</div>';
                 addDebugMessage(`加载群聊列表错误: ${error.message}`);
             }
+        }
+        
+        // 渲染群聊列表
+        function renderGroupList() {
+            // 过滤群聊列表
+            let filteredGroups = [...groupsData];
+            
+            // 根据当前标签页过滤
+            if (currentTab === 'favorites') {
+                filteredGroups = filteredGroups.filter(group => group.is_favorite);
+            }
+            
+            // 根据搜索关键词过滤
+            const searchTerm = groupSearch.value.toLowerCase();
+            if (searchTerm) {
+                filteredGroups = filteredGroups.filter(group => {
+                    const groupId = String(group.group_id).toLowerCase();
+                    const alias = (group.alias || '').toLowerCase();
+                    return groupId.includes(searchTerm) || alias.includes(searchTerm);
+                });
+            }
+            
+            // 清空列表
+            groupList.innerHTML = '';
+            
+            // 如果没有群聊，显示提示信息
+            if (filteredGroups.length === 0) {
+                groupList.innerHTML = '<div class="empty-message">没有找到匹配的群聊</div>';
+                return;
+            }
+            
+            // 渲染群聊列表
+            filteredGroups.forEach(group => {
+                const groupItem = document.createElement('div');
+                groupItem.className = 'group-item';
+                if (group.id === selectedGroupId) {
+                    groupItem.classList.add('selected');
+                }
+                
+                // 显示群ID和别名
+                const displayName = group.alias ? `${group.alias} (${group.group_id})` : `群 ${group.group_id}`;
+                
+                // 创建群聊信息区域
+                const groupInfo = document.createElement('div');
+                groupInfo.className = 'group-info';
+                groupInfo.innerHTML = `
+                    <div class="group-name">${displayName}</div>
+                    <div class="group-actions">
+                        <button class="action-button edit-alias" title="编辑别名">✏️</button>
+                        <button class="action-button toggle-favorite" title="${group.is_favorite ? '取消常用' : '设为常用'}">${group.is_favorite ? '★' : '☆'}</button>
+                    </div>
+                `;
+                
+                groupItem.appendChild(groupInfo);
+                
+                // 点击群聊项选中
+                groupItem.addEventListener('click', (e) => {
+                    // 如果点击的是操作按钮，不触发选中
+                    if (e.target.closest('.action-button')) {
+                        return;
+                    }
+                    
+                    // 移除所有选中状态
+                    document.querySelectorAll('.group-item').forEach(item => {
+                        item.classList.remove('selected');
+                    });
+                    
+                    // 添加选中状态
+                    groupItem.classList.add('selected');
+                    
+                    // 更新选中的群聊ID
+                    selectedGroupId = group.id;
+                    updateFilterStatus();
+                });
+                
+                // 编辑别名按钮点击事件
+                groupItem.querySelector('.edit-alias').addEventListener('click', () => {
+                    const currentAlias = group.alias || '';
+                    const newAlias = prompt('请输入群聊别名:', currentAlias);
+                    
+                    if (newAlias !== null) {  // 用户点击了确定
+                        setGroupAlias(group.group_id, newAlias);
+                    }
+                });
+                
+                // 设为常用按钮点击事件
+                groupItem.querySelector('.toggle-favorite').addEventListener('click', () => {
+                    toggleFavoriteGroup(group.id, !group.is_favorite);
+                });
+                
+                groupList.appendChild(groupItem);
+            });
+        }
+        
+        // 监听群聊搜索
+        groupSearch.addEventListener('input', filterGroups);
+        
+        // 监听标签页切换
+        tabButtons.forEach(button => {
+            button.addEventListener('click', function() {
+                // 移除所有标签页的active类
+                tabButtons.forEach(btn => btn.classList.remove('active'));
+                // 添加当前标签页的active类
+                this.classList.add('active');
+                // 更新当前标签页
+                currentTab = this.dataset.tab;
+                // 重新渲染群聊列表
+                renderGroupList();
+            });
+        });
+        
+        // 过滤群聊列表
+        function filterGroups() {
+            renderGroupList();
         }
         
         // 显示最近消息
@@ -707,9 +906,8 @@
             
             socket.send(JSON.stringify({
                 type: 'command',
-                action: 'set_groups',
-                groups: selectedGroupId ? [selectedGroupId] : [],
-                filter_enabled: filterEnabled
+                action: 'set_active_group',
+                group_id: selectedGroupId
             }));
             
             updateFilterStatus();
@@ -719,34 +917,35 @@
         
         // 启用监听
         enableFilterButton.addEventListener('click', () => {
-            filterEnabled = true;
-            selectedGroupId = groupSelect.value;
-            if (selectedGroupId === 'loading' || selectedGroupId === 'error' || selectedGroupId === 'none') {
-                selectedGroupId = null;
+            if (!selectedGroupId) {
+                alert('请先选择一个群聊');
+                return;
             }
+            
+            filterEnabled = true;
             sendFilterSettings();
+            
+            // 同时更新预览框的过滤设置
+            if (isPreviewReady && previewFrame.contentWindow) {
+                const selectedGroup = groupsData.find(g => g.id === selectedGroupId);
+                if (selectedGroup) {
+                    previewFrame.contentWindow.postMessage({
+                        action: 'setFilter',
+                        enabled: true,
+                        groupId: selectedGroup.group_id
+                    }, '*');
+                    addDebugMessage(`已向预览框发送过滤设置: 启用=true, 群ID=${selectedGroup.group_id}`);
+                }
+            }
         });
         
         // 显示最近消息
         showRecentButton.addEventListener('click', () => {
-            selectedGroupId = groupSelect.value;
-            if (selectedGroupId === 'loading' || selectedGroupId === 'error' || selectedGroupId === 'none') {
+            if (!selectedGroupId) {
                 alert('请选择有效的群聊');
                 return;
             }
             showRecentMessages();
-        });
-        
-        // 选择改变时更新选中的群聊ID
-        groupSelect.addEventListener('change', () => {
-            selectedGroupId = groupSelect.value;
-            if (selectedGroupId === 'loading' || selectedGroupId === 'error' || selectedGroupId === 'none') {
-                selectedGroupId = null;
-            }
-            if (filterEnabled) {
-                sendFilterSettings();
-            }
-            updateFilterStatus();
         });
         
         // 刷新群列表
@@ -785,6 +984,70 @@
             debugPanel.scrollTop = debugPanel.scrollHeight;
         }
         
+        // 设置群聊别名
+        async function setGroupAlias(groupId, alias) {
+            try {
+                addDebugMessage(`正在设置群 ${groupId} 的别名为: ${alias}`);
+                
+                const response = await fetch('/api/group-alias', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        group_id: groupId,
+                        alias: alias
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    addDebugMessage(`群聊别名设置成功: ${groupId} -> ${alias}`);
+                    // 重新加载群聊列表以更新显示
+                    loadGroups();
+                } else {
+                    addDebugMessage(`设置别名失败: ${data.message}`);
+                    alert('设置别名失败: ' + data.message);
+                }
+            } catch (error) {
+                addDebugMessage(`设置别名错误: ${error.message}`);
+                alert('设置别名出错，详情请查看控制台');
+            }
+        }
+        
+        // 设置群聊为常用/取消常用
+        async function toggleFavoriteGroup(groupId, isFavorite) {
+            try {
+                addDebugMessage(`正在${isFavorite ? '添加' : '移除'}常用群聊: ${groupId}`);
+                
+                const response = await fetch('/api/favorite-group', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        group_id: groupId,
+                        is_favorite: isFavorite
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    addDebugMessage(`${isFavorite ? '添加' : '移除'}常用群聊成功: ${groupId}`);
+                    // 重新加载群聊列表以更新显示
+                    loadGroups();
+                } else {
+                    addDebugMessage(`${isFavorite ? '添加' : '移除'}常用群聊失败: ${data.message}`);
+                    alert(`${isFavorite ? '添加' : '移除'}常用群聊失败: ` + data.message);
+                }
+            } catch (error) {
+                addDebugMessage(`${isFavorite ? '添加' : '移除'}常用群聊错误: ${error.message}`);
+                alert(`${isFavorite ? '添加' : '移除'}常用群聊出错，详情请查看控制台`);
+            }
+        }
+        
         // WebSocket连接
         function connectWebSocket() {
             // 关闭现有连接
@@ -807,7 +1070,7 @@
                 addDebugMessage("WebSocket连接成功");
                 
                 // 连接后发送当前的过滤设置
-                if (filterEnabled) {
+                if (filterEnabled && selectedGroupId) {
                     sendFilterSettings();
                 }
             };
@@ -816,46 +1079,57 @@
                 try {
                     const data = JSON.parse(event.data);
                     
-                    if (data.type === "command_response") {
-                        // 处理命令响应
-                        addDebugMessage(`命令响应: ${data.message}`);
-                        if (data.debug_info) {
-                            addDebugMessage(`群ID: ${JSON.stringify(data.debug_info.group_ids)}`);
-                        }
-                    } else if (data.type === "danmaku") {
-                        // 处理弹幕消息
-                        // 检查消息是否已经处理过
-                        if (data.message_id && latestMessages.has(data.message_id)) {
-                            addDebugMessage(`跳过重复消息: ${data.content.substring(0, 15)}...`);
-                            return;
-                        }
-                        
-                        // 记录消息ID，防止重复处理
-                        if (data.message_id) {
-                            latestMessages.add(data.message_id);
-                        }
-                        
-                        addDebugMessage(`弹幕: ${data.content.substring(0, 15)}...`);
-                        
-                        // 更新消息计数
+                    // 处理不同类型的消息
+                    if (data.type === 'connection') {
+                        addDebugMessage(`服务器消息: ${data.message}`);
+                    } else if (data.type === 'stats') {
+                        // 更新统计信息
+                        activeConnectionsEl.textContent = data.connections || 0;
+                        activeDanmakuEl.textContent = messageCount || 0;
+                        messageRateEl.textContent = (messageCount / 5).toFixed(2);
+                    } else if (data.type === 'danmaku') {
+                        // 收到新弹幕消息
                         messageCount++;
+                        lastMessageTime = Date.now();
                         
-                        // 转发到预览框
+                        // 检查是否已经显示过这条消息（防止重复）
+                        if (data.message_id && !latestMessages.has(data.message_id)) {
+                            latestMessages.add(data.message_id);
+                            
+                            // 向预览框发送消息
+                            if (isPreviewReady && previewFrame.contentWindow) {
+                                previewFrame.contentWindow.postMessage({
+                                    action: 'newDanmaku',
+                                    message: data
+                                }, '*');
+                                addDebugMessage(`已向预览框发送弹幕: ${data.content.substring(0, 15)}...`);
+                            }
+                            
+                            // 添加到最近消息列表
+                            addRecentMessage(data);
+                        }
+                    } else if (data.type === 'active_group') {
+                        // 更新活跃群组
+                        addDebugMessage(`活跃群组已更新: ${data.group_id}`);
+                        
+                        // 如果预览框已准备好，向预览框发送过滤设置
                         if (isPreviewReady && previewFrame.contentWindow) {
                             previewFrame.contentWindow.postMessage({
-                                action: 'newDanmaku',
-                                message: data
+                                action: 'setFilter',
+                                enabled: true,
+                                groupId: data.group_id
                             }, '*');
+                            addDebugMessage(`已向预览框发送过滤设置: 启用=true, 群ID=${data.group_id}`);
                         }
-                    } else if (data.type === "connection") {
-                        // 处理连接消息
-                        addDebugMessage(`连接消息: ${data.message}`);
-                    } else if (data.type === "stats") {
-                        // 处理统计信息
-                        activeConnectionsEl.textContent = data.connections || 0;
+                    } else if (data.type === 'command_response') {
+                        // 处理命令响应
+                        addDebugMessage(`命令响应: ${data.action} - ${data.message}`);
+                        if (data.debug_info) {
+                            addDebugMessage(`调试信息: ${JSON.stringify(data.debug_info)}`);
+                        }
                     }
-                } catch (e) {
-                    addDebugMessage(`处理消息时出错: ${e.message}`);
+                } catch (error) {
+                    addDebugMessage(`处理WebSocket消息错误: ${error.message}`);
                 }
             };
             

@@ -63,37 +63,209 @@
     
     <script>
         // 配置
-        const container = document.getElementById('container');
-        const debugInfo = document.getElementById('debug-info');
-        const danmakuCountElement = document.getElementById('danmaku-count');
-        let activeDanmaku = 0;
-        let maxDanmaku = 50;  // 最大同时显示的弹幕数
-        let danmakuFontSize = 32;  // 默认弹幕字体大小
-        let animationMethod = 'transform';  // 默认使用transform动画
-        let isDebugMode = false;  // 调试模式
+        const config = {
+            maxDanmaku: 100,
+            fontSize: 24,
+            animationMethod: 'css',
+            showDebug: false
+        };
         
-        // 显示调试信息
-        function toggleDebug() {
-            isDebugMode = !isDebugMode;
-            debugInfo.style.display = isDebugMode ? 'block' : 'none';
+        // 状态变量
+        let socket = null;
+        let danmakuContainer = null;
+        let debugPanel = null;
+        let activeDanmakuCount = 0;
+        let processedMessages = new Set(); // 用于存储已处理的消息ID，防止重复
+        let filterSettings = {
+            enabled: false,
+            groupId: null
+        };
+        
+        // 初始化
+        window.onload = function() {
+            danmakuContainer = document.getElementById('container');
+            debugPanel = document.getElementById('debug-info');
+            
+            // 检查URL参数
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.has('debug')) {
+                config.showDebug = urlParams.get('debug') === 'true';
+                toggleDebugPanel();
+            }
+            
+            // 连接WebSocket
+            connectWebSocket();
+            
+            // 监听来自控制面板的消息
+            window.addEventListener('message', function(event) {
+                try {
+                    const data = event.data;
+                    
+                    if (data.action === 'showRecentMessages') {
+                        // 显示最近消息
+                        showRecentMessages(data.messages);
+                    } else if (data.action === 'newDanmaku') {
+                        // 显示新弹幕
+                        processDanmaku(data.message);
+                    } else if (data.action === 'clearDanmaku') {
+                        // 清空弹幕
+                        clearAllDanmaku();
+                    } else if (data.action === 'updateSettings') {
+                        // 更新设置
+                        updateSettings(data.settings);
+                    } else if (data.action === 'setFilter') {
+                        // 设置过滤
+                        filterSettings.enabled = data.enabled;
+                        filterSettings.groupId = data.groupId;
+                        addDebugMessage(`过滤设置已更新: 启用=${filterSettings.enabled}, 群ID=${filterSettings.groupId}`);
+                    }
+                } catch (error) {
+                    addDebugMessage(`处理控制面板消息错误: ${error.message}`);
+                }
+            });
+            
+            // 通知控制面板预览框已准备好
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage({ type: 'previewReady' }, '*');
+                addDebugMessage("已通知控制面板预览框准备就绪");
+            }
+        };
+        
+        // 连接WebSocket
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            
+            addDebugMessage(`正在连接到 ${wsUrl}`);
+            
+            socket = new WebSocket(wsUrl);
+            
+            socket.onopen = function(e) {
+                addDebugMessage("WebSocket连接成功");
+            };
+            
+            socket.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    addDebugMessage(`收到消息: ${data.type}`);
+                    
+                    if (data.type === 'danmaku') {
+                        // 处理弹幕消息
+                        processDanmaku(data);
+                    } else if (data.type === 'settings') {
+                        // 处理设置更新
+                        updateSettings(data.settings);
+                    } else if (data.type === 'active_group') {
+                        // 处理活跃群组设置
+                        addDebugMessage(`收到活跃群组: ${data.group_id}`);
+                        filterSettings.enabled = true;
+                        filterSettings.groupId = data.group_id;
+                        addDebugMessage(`过滤设置已更新: 启用=true, 群ID=${data.group_id}`);
+                    } else if (data.type === 'connection') {
+                        // 连接消息
+                        addDebugMessage(`连接状态: ${data.message}`);
+                    }
+                } catch (error) {
+                    addDebugMessage(`处理WebSocket消息错误: ${error.message}`);
+                }
+            };
+            
+            socket.onclose = function(event) {
+                if (event.wasClean) {
+                    addDebugMessage(`连接已关闭，代码=${event.code} 原因=${event.reason}`);
+                } else {
+                    addDebugMessage("连接异常断开");
+                }
+                
+                // 尝试重新连接
+                setTimeout(connectWebSocket, 3000);
+            };
+            
+            socket.onerror = function(error) {
+                addDebugMessage(`WebSocket错误: ${error.message}`);
+            };
+        }
+        
+        // 处理弹幕消息
+        function processDanmaku(data) {
+            // 检查是否已处理过该消息
+            if (data.message_id && processedMessages.has(data.message_id)) {
+                addDebugMessage(`跳过重复消息: ${data.content.substring(0, 15)}...`);
+                return;
+            }
+            
+            // 检查过滤设置
+            if (filterSettings.enabled && filterSettings.groupId) {
+                // 获取消息的群ID
+                const messageGroupId = data.group_id;
+                
+                // 如果消息不是来自选定的群，则跳过
+                if (messageGroupId !== filterSettings.groupId) {
+                    addDebugMessage(`过滤消息: 群ID=${messageGroupId}, 不匹配当前过滤群ID=${filterSettings.groupId}`);
+                    return;
+                }
+            }
+            
+            // 记录消息ID，防止重复处理
+            if (data.message_id) {
+                processedMessages.add(data.message_id);
+            }
+            
+            // 创建弹幕元素
+            createDanmaku(data.content);
+            
+            // 添加调试信息
+            addDebugMessage(`显示弹幕: ${data.content.substring(0, 15)}...`);
+        }
+        
+        // 显示最近消息
+        function showRecentMessages(messages) {
+            // 清空现有弹幕
+            clearAllDanmaku();
+            
+            // 清空已处理消息记录
+            processedMessages.clear();
+            
+            // 显示最近消息
+            let displayedCount = 0;
+            messages.forEach(message => {
+                // 检查过滤设置
+                if (filterSettings.enabled && filterSettings.groupId) {
+                    // 如果消息不是来自选定的群，则跳过
+                    if (message.group_id !== filterSettings.groupId) {
+                        return;
+                    }
+                }
+                
+                // 记录消息ID，防止重复处理
+                if (message.message_id) {
+                    processedMessages.add(message.message_id);
+                }
+                
+                // 创建弹幕元素
+                createDanmaku(message.content);
+                displayedCount++;
+            });
+            
+            addDebugMessage(`显示了 ${displayedCount} 条最近消息，过滤后共 ${messages.length} 条`);
         }
         
         // 创建弹幕元素
         function createDanmaku(text, userId, messageId) {
             // 检查活跃弹幕数量，如果超过最大数量，直接返回
-            if (activeDanmaku >= maxDanmaku) {
+            if (activeDanmakuCount >= config.maxDanmaku) {
                 console.log('已达最大弹幕数量，丢弃新弹幕');
                 return;
             }
             
             // 防止XSS
             const safeText = String(text).replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            const trackHeight = container.clientHeight - danmakuFontSize;
+            const trackHeight = danmakuContainer.clientHeight - config.fontSize;
             
             const danmaku = document.createElement('div');
             danmaku.className = 'danmaku';
             danmaku.innerHTML = safeText;
-            danmaku.style.fontSize = `${danmakuFontSize}px`;
+            danmaku.style.fontSize = `${config.fontSize}px`;
             danmaku.setAttribute('data-message-id', messageId || '');
             
             // 随机颜色
@@ -128,13 +300,13 @@
             danmaku.style.top = `${top}px`;
             
             // 添加到容器
-            container.appendChild(danmaku);
+            danmakuContainer.appendChild(danmaku);
             
             // 获取宽度
             const danmakuWidth = danmaku.offsetWidth;
             
             // 设置初始位置（确保在屏幕右侧外）
-            const containerWidth = container.clientWidth;
+            const containerWidth = danmakuContainer.clientWidth;
             const startPosition = containerWidth;
             const endPosition = -danmakuWidth;
             
@@ -148,10 +320,10 @@
             console.log(`弹幕: "${safeText.substring(0, 20)}${safeText.length > 20 ? '...' : ''}" 宽度=${danmakuWidth}px, 持续时间=${duration}ms`);
             
             // 增加活跃弹幕计数
-            activeDanmaku++;
+            activeDanmakuCount++;
             updateDanmakuCount();
             
-            if (animationMethod === 'transform') {
+            if (config.animationMethod === 'transform') {
                 // 确保弹幕起始位置在屏幕外右侧
                 danmaku.style.transform = `translateX(${startPosition}px)`;
                 
@@ -170,7 +342,7 @@
                     setTimeout(() => {
                         if (danmaku && danmaku.parentNode) {
                             danmaku.parentNode.removeChild(danmaku);
-                            activeDanmaku--;
+                            activeDanmakuCount--;
                             updateDanmakuCount();
                         }
                     }, duration + 200); // 增加延迟确保动画完成后再移除
@@ -195,7 +367,7 @@
                         // 动画结束，移除弹幕
                         if (danmaku && danmaku.parentNode) {
                             danmaku.parentNode.removeChild(danmaku);
-                            activeDanmaku--;
+                            activeDanmakuCount--;
                             updateDanmakuCount();
                         }
                     }
@@ -208,274 +380,58 @@
         
         // 更新弹幕计数显示
         function updateDanmakuCount() {
-            danmakuCountElement.textContent = activeDanmaku;
+            debugPanel.textContent = activeDanmakuCount;
             
             // 向父窗口报告弹幕数量（用于控制台显示）
             if (window.parent && window.parent !== window) {
                 window.parent.postMessage({
                     type: 'danmakuStats',
-                    count: activeDanmaku
+                    count: activeDanmakuCount
                 }, '*');
             }
         }
         
         // 清空所有弹幕
-        function clearDanmaku() {
-            container.innerHTML = '';
-            activeDanmaku = 0;
+        function clearAllDanmaku() {
+            danmakuContainer.innerHTML = '';
+            activeDanmakuCount = 0;
             updateDanmakuCount();
         }
         
         // 应用设置
-        function applySettings(settings) {
+        function updateSettings(settings) {
             if (settings.fontSize && typeof settings.fontSize === 'number') {
-                danmakuFontSize = settings.fontSize;
-                document.documentElement.style.setProperty('--danmaku-font-size', `${danmakuFontSize}px`);
-                console.log(`字体大小已更新为 ${danmakuFontSize}px`);
+                config.fontSize = settings.fontSize;
+                document.documentElement.style.setProperty('--danmaku-font-size', `${config.fontSize}px`);
+                console.log(`字体大小已更新为 ${config.fontSize}px`);
             }
             
             if (settings.maxDanmaku && typeof settings.maxDanmaku === 'number') {
-                maxDanmaku = settings.maxDanmaku;
-                console.log(`最大弹幕数已更新为 ${maxDanmaku}`);
+                config.maxDanmaku = settings.maxDanmaku;
+                console.log(`最大弹幕数已更新为 ${config.maxDanmaku}`);
             }
             
             if (settings.animationMethod) {
-                animationMethod = settings.animationMethod;
-                console.log(`动画方式已更新为 ${animationMethod}`);
+                config.animationMethod = settings.animationMethod;
+                console.log(`动画方式已更新为 ${config.animationMethod}`);
             }
             
             // 更新所有现有弹幕的字体大小
             document.querySelectorAll('.danmaku').forEach(element => {
-                element.style.fontSize = `${danmakuFontSize}px`;
+                element.style.fontSize = `${config.fontSize}px`;
             });
         }
         
-        // WebSocket连接
-        let socket = null;
-        let reconnectInterval = 1000;  // 初始重连间隔为1秒
-        let isReconnecting = false;
-        let isFullscreen = window.self === window.top; // 判断是否为全屏独立窗口
-        let processedMessages = new Set(); // 存储已处理的消息ID，避免重复
-        
-        // 连接WebSocket
-        function connectWebSocket() {
-            if (socket && socket.readyState === WebSocket.OPEN) {
-                console.log('WebSocket已连接');
-                return;
-            }
-            
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws`;
-            
-            console.log(`正在连接WebSocket: ${wsUrl}`);
-            socket = new WebSocket(wsUrl);
-            
-            socket.onopen = function() {
-                console.log('WebSocket连接已建立');
-                reconnectInterval = 1000;  // 重置重连间隔
-                isReconnecting = false;
-                
-                // 设置群聊过滤（如果URL中有group参数）
-                const urlParams = new URLSearchParams(window.location.search);
-                const groupId = urlParams.get('group');
-                if (groupId) {
-                    socket.send(JSON.stringify({
-                        type: 'command',
-                        action: 'set_groups',
-                        filter_enabled: true,
-                        groups: [groupId]
-                    }));
-                    console.log(`已设置过滤群聊: ${groupId}`);
-                    
-                    // 连接成功后请求最近消息
-                    requestRecentMessages(groupId);
-                }
-            };
-            
-            socket.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    console.log('收到WebSocket消息:', data);
-                    
-                    if (data.type === 'danmaku') {
-                        // 检查是否已处理过该消息
-                        if (data.message_id && processedMessages.has(data.message_id)) {
-                            console.log(`跳过重复消息: ${data.message_id}`);
-                            return;
-                        }
-                        
-                        // 添加到已处理集合
-                        if (data.message_id) {
-                            processedMessages.add(data.message_id);
-                        }
-                        
-                        // 处理弹幕消息
-                        createDanmaku(data.content, data.user_id, data.message_id);
-                    } else if (data.type === 'settings') {
-                        // 处理设置消息
-                        console.log('收到设置更新:', data.settings);
-                        applySettings(data.settings);
-                    }
-                } catch (e) {
-                    console.error('处理WebSocket消息时出错:', e);
-                }
-            };
-            
-            socket.onclose = function(event) {
-                if (!isReconnecting) {
-                    console.log(`WebSocket连接已关闭，代码：${event.code}，原因：${event.reason || '未知'}`);
-                    isReconnecting = true;
-                    
-                    // 指数退避重连
-                    console.log(`将在 ${reconnectInterval}ms 后重新连接...`);
-                    setTimeout(function() {
-                        reconnectInterval = Math.min(30000, reconnectInterval * 1.5);  // 最大间隔30秒
-                        connectWebSocket();
-                    }, reconnectInterval);
-                }
-            };
-            
-            socket.onerror = function(error) {
-                console.error('WebSocket错误:', error);
-            };
+        // 显示调试信息
+        function toggleDebugPanel() {
+            debugPanel.style.display = config.showDebug ? 'block' : 'none';
         }
         
-        // 请求最近消息
-        function requestRecentMessages(groupId) {
-            if (!groupId) return;
-            
-            console.log(`正在请求群 ${groupId} 的最近消息`);
-            const url = `/api/recent-messages/${groupId}`;
-            
-            fetch(url)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.status === 'success' && data.messages && data.messages.length > 0) {
-                        console.log(`收到 ${data.messages.length} 条最近消息`);
-                        
-                        // 清空已处理消息集合
-                        processedMessages.clear();
-                        
-                        // 设置延迟，逐个显示消息
-                        data.messages.forEach((msg, index) => {
-                            setTimeout(() => {
-                                // 记录消息ID防止重复处理
-                                if (msg.message_id) {
-                                    processedMessages.add(msg.message_id);
-                                }
-                                createDanmaku(msg.content, msg.user_id, msg.message_id);
-                            }, index * 300);  // 每隔300ms显示一条
-                        });
-                    } else {
-                        console.log('没有找到最近消息或请求失败');
-                    }
-                })
-                .catch(error => {
-                    console.error('获取最近消息出错:', error);
-                });
+        // 添加调试信息
+        function addDebugMessage(message) {
+            console.log(message);
+            // 这里可以根据需要将调试信息添加到页面上的某个元素中
         }
-        
-        // 接收来自父窗口的消息
-        window.addEventListener('message', function(event) {
-            console.log('收到来自父窗口的消息:', event.data);
-            
-            if (event.data.action === 'newDanmaku') {
-                // 添加新弹幕
-                const message = event.data.message;
-                
-                // 检查是否已处理过该消息
-                if (message.message_id && processedMessages.has(message.message_id)) {
-                    console.log(`跳过重复消息: ${message.message_id}`);
-                    return;
-                }
-                
-                // 添加到已处理集合
-                if (message.message_id) {
-                    processedMessages.add(message.message_id);
-                }
-                
-                createDanmaku(message.content, message.user_id, message.message_id);
-            } else if (event.data.action === 'clearDanmaku') {
-                // 清空所有弹幕
-                clearDanmaku();
-                // 清空已处理消息集合
-                processedMessages.clear();
-            } else if (event.data.action === 'showRecentMessages') {
-                // 显示最近消息
-                const messages = event.data.messages || [];
-                
-                // 清空已处理消息集合
-                processedMessages.clear();
-                
-                // 设置延迟，逐个显示消息
-                messages.forEach((msg, index) => {
-                    setTimeout(() => {
-                        // 记录消息ID防止重复处理
-                        if (msg.message_id) {
-                            processedMessages.add(msg.message_id);
-                        }
-                        createDanmaku(msg.content, msg.user_id, msg.message_id);
-                    }, index * 300);  // 每隔300ms显示一条
-                });
-            } else if (event.data.action === 'applySettings') {
-                // 应用设置
-                const settings = event.data.settings || {};
-                applySettings(settings);
-            }
-            
-            // 通知父窗口弹幕页面已准备就绪
-            if (window.parent && window.parent !== window) {
-                window.parent.postMessage({type: 'previewReady'}, '*');
-            }
-        });
-        
-        // 按键事件处理
-        document.addEventListener('keydown', function(event) {
-            // D键切换调试信息
-            if (event.key === 'd' || event.key === 'D') {
-                toggleDebug();
-            }
-            
-            // ESC键退出全屏
-            if (event.key === 'Escape' && document.fullscreenElement) {
-                document.exitFullscreen();
-            }
-        });
-        
-        // 定期更新统计信息
-        setInterval(updateDanmakuCount, 1000);
-        
-        // 初始化
-        function init() {
-            // 通知父窗口弹幕页面已就绪
-            if (window.parent && window.parent !== window) {
-                window.parent.postMessage({type: 'previewReady'}, '*');
-            }
-            
-            // 检查是否显示调试信息
-            const urlParams = new URLSearchParams(window.location.search);
-            if (urlParams.get('debug') === 'true') {
-                toggleDebug();
-            }
-            
-            // 如果是全屏模式，自动连接WebSocket
-            if (isFullscreen) {
-                console.log('检测到独立窗口模式，自动连接WebSocket');
-                connectWebSocket();
-            } else {
-                console.log('检测到嵌入模式，不自动连接WebSocket');
-            }
-            
-            // 应用URL中的字体大小设置
-            const fontSize = urlParams.get('fontSize');
-            if (fontSize && !isNaN(parseInt(fontSize))) {
-                danmakuFontSize = parseInt(fontSize);
-                document.documentElement.style.setProperty('--danmaku-font-size', `${danmakuFontSize}px`);
-            }
-        }
-        
-        // 初始化
-        init();
     </script>
 </body>
 </html> 

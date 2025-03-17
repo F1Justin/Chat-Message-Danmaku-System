@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Query, Body
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -8,13 +8,14 @@ import json
 import sqlalchemy
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from sqlalchemy import Column, Integer, String, Text, DateTime, select, JSON, ForeignKey, join, func
+from sqlalchemy import Column, Integer, String, Text, DateTime, select, JSON, ForeignKey, join, func, and_, desc
 from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
 import sys
 import logging
 from typing import List, Dict, Tuple, Any, Optional
+import time
 
 # 加载环境变量
 load_dotenv()
@@ -91,131 +92,104 @@ connection_filters = {}
 # 存储session_id到group_id的映射缓存
 session_to_group_map: Dict[str, str] = {}
 
-# 统计信息
-stats = {
-    "total_messages_processed": 0,
-    "total_danmaku_sent": 0
-}
+# 全局活跃群组ID
+active_group_id: Optional[str] = None
 
-@app.get("/", response_class=HTMLResponse)
-async def get_danmaku_page(request: Request):
-    # 打印访问日志，包括查询参数
-    query_params = dict(request.query_params)
-    if 'group' in query_params:
-        print(f"访问弹幕页面，指定监听群聊ID: {query_params['group']}")
-    else:
-        print("访问弹幕页面，未指定监听群聊")
-    
-    return templates.TemplateResponse("danmaku.html", {"request": request})
+# 群组别名配置
+group_aliases: Dict[str, str] = {}
 
-@app.get("/control", response_class=HTMLResponse)
-async def get_control_page(request: Request):
-    print("访问控制面板页面")
-    return templates.TemplateResponse("control.html", {"request": request})
+# 常用群组列表
+favorite_groups: List[str] = []
 
-@app.get("/api/groups", response_class=JSONResponse)
-async def get_groups():
+# 配置文件路径
+CONFIG_FILE = "config.json"
+
+# 加载配置
+def load_config():
+    global group_aliases, favorite_groups, active_group_id
     try:
-        async with async_session() as session:
-            # 查询所有level=2的会话（群聊），但按群ID分组去重
-            query = (
-                select(SessionModel.id2)
-                .where(SessionModel.level == 2)
-                .group_by(SessionModel.id2)
-                .order_by(SessionModel.id2)
-            )
-            result = await session.execute(query)
-            group_ids = result.scalars().all()
-            
-            # 对每个群ID查询其session_id（取最新的一个）
-            group_list = []
-            for group_id in group_ids:
-                # 查询该群ID对应的最新session
-                session_query = (
-                    select(SessionModel.id)
-                    .where(
-                        SessionModel.level == 2,
-                        SessionModel.id2 == group_id
-                    )
-                    .order_by(SessionModel.id.desc())
-                    .limit(1)
-                )
-                session_result = await session.execute(session_query)
-                session_id = session_result.scalar_one_or_none()
-                
-                if session_id:
-                    # 更新缓存
-                    session_to_group_map[str(session_id)] = group_id
-                    group_list.append({"id": str(session_id), "group_id": group_id})
-            
-            return {"status": "success", "groups": group_list}
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                group_aliases = config.get('group_aliases', {})
+                favorite_groups = config.get('favorite_groups', [])
+                active_group_id = config.get('active_group_id')
+                print(f"已加载配置: {len(group_aliases)}个群别名, {len(favorite_groups)}个常用群组")
+        else:
+            print("配置文件不存在，使用默认设置")
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        print(f"加载配置出错: {e}")
 
-@app.get("/api/recent-messages/{session_id}", response_class=JSONResponse)
-async def get_recent_messages(session_id: str):
+# 保存配置
+def save_config():
+    try:
+        config = {
+            'group_aliases': group_aliases,
+            'favorite_groups': favorite_groups,
+            'active_group_id': active_group_id
+        }
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        print("配置已保存")
+    except Exception as e:
+        print(f"保存配置出错: {e}")
+
+# 广播统计数据给所有连接
+async def broadcast_stats():
+    stats = {
+        "type": "stats",
+        "connections": len(active_connections),
+    }
+    await broadcast_to_all(json.dumps(stats))
+
+# 广播消息给所有连接
+async def broadcast_to_all(message: str):
+    for connection, _ in active_connections:
+        try:
+            await connection.send_text(message)
+        except Exception as e:
+            print(f"广播消息失败: {e}")
+
+# 广播活跃群组变更消息
+async def broadcast_group_change(group_id: str):
+    """广播群组变更消息到所有连接"""
+    message = {
+        "type": "active_group",
+        "group_id": group_id
+    }
+    await broadcast_to_all(json.dumps(message))
+    print(f"已广播群组变更消息: {group_id}")
+
+# 获取群聊ID
+async def get_group_id_from_session_id(session_id: str) -> Optional[str]:
+    # 尝试从缓存获取
+    if session_id in session_to_group_map:
+        group_id = session_to_group_map[session_id]
+        print(f"从缓存获取映射: session_id={session_id} -> group_id={group_id}")
+        return group_id
+    
+    # 如果缓存中没有，从数据库获取
     try:
         async with async_session() as session:
-            # 首先获取这个session对应的群ID
-            session_query = (
-                select(SessionModel.id2)
-                .where(SessionModel.id == int(session_id))
-            )
-            result = await session.execute(session_query)
+            query = select(SessionModel.id2).where(SessionModel.id == int(session_id))
+            result = await session.execute(query)
             group_id = result.scalar_one_or_none()
             
-            if not group_id:
-                return {"status": "error", "message": "未找到该群聊"}
-            
-            # 查询该群的所有session_id
-            all_sessions_query = (
-                select(SessionModel.id)
-                .where(
-                    SessionModel.level == 2,
-                    SessionModel.id2 == group_id
-                )
-            )
-            all_sessions_result = await session.execute(all_sessions_query)
-            all_session_ids = all_sessions_result.scalars().all()
-            
-            if not all_session_ids:
-                return {"status": "error", "message": "未找到该群的会话"}
-            
-            # 查询指定群聊的最近10条消息（跨所有session）
-            query = (
-                select(MessageRecord, SessionModel)
-                .join(SessionModel, MessageRecord.session_persist_id == SessionModel.id)
-                .where(
-                    MessageRecord.session_persist_id.in_(all_session_ids),
-                    MessageRecord.type == "message",
-                    MessageRecord.plain_text != ""  # 只获取有文本内容的消息
-                )
-                .order_by(MessageRecord.time.desc())
-                .limit(20)  # 增加数量以提高获取到消息的可能性
-            )
-            
-            result = await session.execute(query)
-            messages = result.all()
-            
-            # 转换为前端需要的格式并按时间正序排列
-            message_list = []
-            for message_record, session_model in reversed(messages):
-                message_list.append({
-                    "type": "danmaku",
-                    "content": message_record.plain_text,
-                    "user_id": session_model.id1,
-                    "group_id": session_model.id2,
-                    "session_id": str(session_model.id),
-                    "time": message_record.time.isoformat()
-                })
-            
-            return {"status": "success", "messages": message_list}
+            if group_id:
+                session_to_group_map[session_id] = group_id
+                print(f"从数据库获取映射: session_id={session_id} -> group_id={group_id}")
+                return group_id
+            else:
+                print(f"未找到映射: session_id={session_id}")
+                return None
     except Exception as e:
-        print(f"获取最近消息出错: {e}")
-        return {"status": "error", "message": str(e)}
+        print(f"获取群聊ID出错: {e}")
+        return None
 
+# 处理WebSocket消息
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    global active_group_id
     await websocket.accept()
     logging.info("connection open")
     
@@ -225,11 +199,24 @@ async def websocket_endpoint(websocket: WebSocket):
         "allowed_groups": []
     }
     
+    # 如果有全局活跃群组，则自动设置过滤
+    if active_group_id:
+        connection_filter["enabled"] = True
+        connection_filter["allowed_groups"] = [active_group_id]
+        print(f"新连接自动设置过滤: 启用=True, 群ID={active_group_id}")
+    
     try:
         active_connections.append((websocket, connection_filter))
         
         # 发送初始连接成功消息
         await websocket.send_text(json.dumps({"type": "connection", "message": "连接成功"}))
+        
+        # 如果有全局活跃群组，发送群组信息
+        if active_group_id:
+            await websocket.send_text(json.dumps({
+                "type": "active_group",
+                "group_id": active_group_id
+            }))
         
         # 发送当前连接数量
         await broadcast_stats()
@@ -251,7 +238,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         group_ids = []
                         for session_id in session_ids:
                             group_id = await get_group_id_from_session_id(session_id)
-                            if group_id:
+                            if group_id and group_id not in group_ids:  # 确保不重复添加相同的群ID
                                 group_ids.append(group_id)
                         
                         connection_filter["enabled"] = filter_enabled
@@ -286,6 +273,52 @@ async def websocket_endpoint(websocket: WebSocket):
                             "status": "success",
                             "message": "设置已广播到所有客户端"
                         }))
+                    elif message["action"] == "set_active_group":
+                        # 设置全局活跃群组
+                        session_id = message.get("group_id")
+                        
+                        if session_id:
+                            group_id = await get_group_id_from_session_id(session_id)
+                            if group_id:
+                                active_group_id = group_id
+                                print(f"设置全局活跃群组: {active_group_id}")
+                                save_config()
+                                
+                                # 设置当前连接的过滤
+                                connection_filter["enabled"] = True
+                                connection_filter["allowed_groups"] = [active_group_id]
+                                
+                                # 广播群组变更消息
+                                await broadcast_group_change(active_group_id)
+                                
+                                await websocket.send_text(json.dumps({
+                                    "type": "command_response",
+                                    "action": "set_active_group",
+                                    "status": "success",
+                                    "message": f"已设置活跃群组: {active_group_id}"
+                                }))
+                            else:
+                                await websocket.send_text(json.dumps({
+                                    "type": "command_response",
+                                    "action": "set_active_group",
+                                    "status": "error",
+                                    "message": "无法获取群组ID"
+                                }))
+                        else:
+                            active_group_id = None
+                            save_config()
+                            await websocket.send_text(json.dumps({
+                                "type": "command_response",
+                                "action": "set_active_group",
+                                "status": "success",
+                                "message": "已清除活跃群组"
+                            }))
+                    elif message["action"] == "get_active_group":
+                        # 获取当前活跃群组
+                        await websocket.send_text(json.dumps({
+                            "type": "active_group",
+                            "group_id": active_group_id
+                        }))
             except json.JSONDecodeError:
                 print("非JSON消息")
             except Exception as e:
@@ -302,16 +335,185 @@ async def websocket_endpoint(websocket: WebSocket):
             await broadcast_stats()
         logging.info("connection closed")
 
-@app.get("/api/stats", response_class=JSONResponse)
-async def get_stats():
-    return {
-        "status": "success",
-        "stats": {
-            "active_connections": len(active_connections),
-            "total_messages_processed": stats["total_messages_processed"],
-            "total_danmaku_sent": stats["total_danmaku_sent"]
+# 主页
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request):
+    return templates.TemplateResponse("danmaku.html", {"request": request})
+
+# 控制面板
+@app.get("/control", response_class=HTMLResponse)
+async def control_panel(request: Request):
+    return templates.TemplateResponse("control.html", {"request": request})
+
+# 获取群聊列表
+@app.get("/api/groups", response_class=JSONResponse)
+async def get_groups():
+    try:
+        async with async_session() as session:
+            # 查询所有群聊会话
+            query = select(SessionModel).where(SessionModel.level == 2).order_by(SessionModel.id)
+            result = await session.execute(query)
+            groups = result.scalars().all()
+            
+            # 使用字典来确保按group_id去重
+            unique_groups = {}
+            for group in groups:
+                group_id = group.id2
+                # 如果这个群ID还没有添加过，或者当前session_id更小（优先使用较早的记录）
+                if group_id not in unique_groups or int(group.id) < int(unique_groups[group_id]["id"]):
+                    # 获取群别名
+                    alias = group_aliases.get(str(group_id), "")
+                    # 检查是否为常用群组
+                    is_favorite = str(group.id) in favorite_groups
+                    
+                    unique_groups[group_id] = {
+                        "id": str(group.id),
+                        "group_id": group_id,
+                        "alias": alias,
+                        "is_favorite": is_favorite
+                    }
+            
+            # 将字典转换为列表
+            group_list = list(unique_groups.values())
+            
+            # 按id排序
+            group_list.sort(key=lambda x: int(x["id"]))
+            
+            return {
+                "status": "success",
+                "groups": group_list,
+                "active_group_id": active_group_id
+            }
+    except Exception as e:
+        print(f"获取群聊列表出错: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
         }
-    }
+
+# 获取最近消息
+@app.get("/api/recent-messages/{group_id}", response_class=JSONResponse)
+async def get_recent_messages(group_id: str):
+    try:
+        async with async_session() as session:
+            # 获取群ID
+            group_id_query = select(SessionModel.id2).where(SessionModel.id == int(group_id))
+            group_id_result = await session.execute(group_id_query)
+            actual_group_id = group_id_result.scalar_one_or_none()
+            
+            if not actual_group_id:
+                return {
+                    "status": "error",
+                    "message": "群聊不存在"
+                }
+            
+            # 查询最近消息
+            query = select(MessageRecord, SessionModel).join(
+                SessionModel, MessageRecord.session_persist_id == SessionModel.id
+            ).where(
+                SessionModel.id2 == actual_group_id,
+                MessageRecord.type == "message",
+                MessageRecord.plain_text != ""
+            ).order_by(
+                MessageRecord.time.desc()
+            ).limit(20)
+            
+            result = await session.execute(query)
+            messages = result.fetchall()
+            
+            # 处理消息
+            message_list = []
+            for message, session_model in reversed(messages):  # 反转顺序，从旧到新
+                content = message.plain_text
+                
+                # 简单处理一下消息内容，去除可能的前缀
+                if ": " in content and content.count(": ") == 1:
+                    content = content.split(": ", 1)[1]
+                elif ":" in content and content.count(":") == 1:
+                    content = content.split(":", 1)[1]
+                
+                message_list.append({
+                    "message_id": message.message_id,
+                    "user_id": session_model.id1,
+                    "group_id": session_model.id2,
+                    "time": message.time.isoformat(),
+                    "content": content
+                })
+            
+            return {
+                "status": "success",
+                "messages": message_list
+            }
+    except Exception as e:
+        print(f"获取最近消息出错: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+# 设置群聊别名
+@app.post("/api/group-alias", response_class=JSONResponse)
+async def set_group_alias(data: Dict[str, Any] = Body(...)):
+    try:
+        group_id = str(data.get("group_id"))
+        alias = data.get("alias", "")
+        
+        if not group_id:
+            return {
+                "status": "error",
+                "message": "缺少群ID参数"
+            }
+        
+        # 更新别名
+        group_aliases[group_id] = alias
+        
+        # 保存配置
+        save_config()
+        
+        print(f"设置群聊别名: 群ID={group_id}, 别名={alias}")
+        
+        return {
+            "status": "success",
+            "message": "群聊别名已更新"
+        }
+    except Exception as e:
+        print(f"设置群聊别名出错: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+# 设置常用群组
+@app.post("/api/favorite-group", response_class=JSONResponse)
+async def set_favorite_group(data: Dict[str, Any] = Body(...)):
+    try:
+        group_id = data.get("group_id")
+        is_favorite = data.get("is_favorite", False)
+        
+        if not group_id:
+            return {
+                "status": "error",
+                "message": "缺少群组ID"
+            }
+        
+        # 更新常用群组
+        if is_favorite and group_id not in favorite_groups:
+            favorite_groups.append(group_id)
+        elif not is_favorite and group_id in favorite_groups:
+            favorite_groups.remove(group_id)
+        
+        save_config()
+        
+        return {
+            "status": "success",
+            "message": "常用群组已更新"
+        }
+    except Exception as e:
+        print(f"设置常用群组出错: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 
 # 处理接收到的消息
 async def check_for_new_messages():
@@ -443,50 +645,11 @@ async def send_stats_periodically():
             print(f"发送统计信息时出错: {str(e)}")
         await asyncio.sleep(10)
 
-# 广播统计数据给所有连接
-async def broadcast_stats():
-    stats = {
-        "type": "stats",
-        "connections": len(active_connections),
-    }
-    await broadcast_to_all(json.dumps(stats))
-
-# 广播消息给所有连接
-async def broadcast_to_all(message: str):
-    for connection, _ in active_connections:
-        try:
-            await connection.send_text(message)
-        except Exception as e:
-            print(f"广播消息失败: {e}")
-
-# 获取群聊ID
-async def get_group_id_from_session_id(session_id: str) -> Optional[str]:
-    # 尝试从缓存获取
-    if session_id in session_to_group_map:
-        group_id = session_to_group_map[session_id]
-        print(f"从缓存获取映射: session_id={session_id} -> group_id={group_id}")
-        return group_id
-    
-    # 如果缓存中没有，从数据库获取
-    try:
-        async with async_session() as session:
-            query = select(SessionModel.id2).where(SessionModel.id == int(session_id))
-            result = await session.execute(query)
-            group_id = result.scalar_one_or_none()
-            
-            if group_id:
-                session_to_group_map[session_id] = group_id
-                print(f"从数据库获取映射: session_id={session_id} -> group_id={group_id}")
-                return group_id
-            else:
-                print(f"未找到映射: session_id={session_id}")
-                return None
-    except Exception as e:
-        print(f"获取群聊ID出错: {e}")
-        return None
-
 @app.on_event("startup")
 async def startup_event():
+    # 加载配置
+    load_config()
+    
     # 启动后台任务检查新消息
     asyncio.create_task(check_for_new_messages())
     # 启动后台任务发送统计信息
@@ -497,8 +660,8 @@ async def startup_event():
     print("="*50)
     print("\n弹幕页面: http://localhost:8000")
     print("控制面板: http://localhost:8000/control")
-    print("\n使用控制面板选择要监听的群聊，或者直接使用以下格式访问特定群聊的弹幕：")
-    print("http://localhost:8000/?group=群ID\n")
+    print("\n使用控制面板选择要监听的群聊")
+    print("="*50)
 
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True) 
