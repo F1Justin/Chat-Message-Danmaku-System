@@ -301,20 +301,22 @@
         .group-tabs {
             display: flex;
             margin-bottom: 10px;
+            border-bottom: 1px solid var(--border-color);
         }
         
         .tab-button {
-            flex: 1;
-            padding: 8px;
-            background-color: var(--card-bg);
-            border: 1px solid var(--border-color);
+            padding: 8px 15px;
+            background: none;
+            border: none;
             cursor: pointer;
+            color: var(--text-color);
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
         }
         
         .tab-button.active {
-            background-color: var(--primary-color);
-            color: white;
-            border-color: var(--primary-color);
+            border-bottom: 2px solid var(--primary-color);
+            color: var(--primary-color);
         }
         
         .group-list-container {
@@ -333,6 +335,8 @@
             border-bottom: 1px solid var(--border-color);
             cursor: pointer;
             transition: background-color 0.2s;
+            display: flex;
+            align-items: center;
         }
         
         .group-item:last-child {
@@ -340,15 +344,25 @@
         }
         
         .group-item:hover {
-            background-color: rgba(0, 0, 0, 0.05);
+            background-color: rgba(var(--primary-color-rgb), 0.1);
         }
         
         .group-item.selected {
+            background-color: rgba(var(--primary-color-rgb), 0.2);
+        }
+        
+        .group-item.favorite {
             background-color: rgba(var(--primary-color-rgb), 0.1);
             border-left: 3px solid var(--primary-color);
+            font-weight: bold;
+        }
+        
+        .group-item.favorite.selected {
+            background-color: rgba(var(--primary-color-rgb), 0.3);
         }
         
         .group-info {
+            flex: 1;
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -733,12 +747,27 @@
                 return;
             }
             
+            // 将常用群聊置顶
+            filteredGroups.sort((a, b) => {
+                // 首先按照是否为常用群聊排序（常用的排在前面）
+                if (a.is_favorite !== b.is_favorite) {
+                    return a.is_favorite ? -1 : 1;
+                }
+                // 如果常用状态相同，则按照ID排序
+                return parseInt(a.id) - parseInt(b.id);
+            });
+            
             // 渲染群聊列表
             filteredGroups.forEach(group => {
                 const groupItem = document.createElement('div');
                 groupItem.className = 'group-item';
                 if (group.id === selectedGroupId) {
                     groupItem.classList.add('selected');
+                }
+                
+                // 如果是常用群聊，添加特殊样式
+                if (group.is_favorite) {
+                    groupItem.classList.add('favorite');
                 }
                 
                 // 显示群ID和别名
@@ -883,8 +912,19 @@
         // 更新过滤状态显示
         function updateFilterStatus() {
             if (!filterEnabled) {
-                groupFilterStatus.textContent = '当前未监听任何群聊';
-                groupFilterStatus.style.color = 'var(--muted-color)';
+                if (selectedGroupId) {
+                    const selectedGroup = groupsData.find(g => g.id === selectedGroupId);
+                    if (selectedGroup) {
+                        groupFilterStatus.textContent = `已选择群 ${selectedGroup.group_id}，点击"监听该群"按钮开始监听`;
+                        groupFilterStatus.style.color = 'var(--muted-color)';
+                    } else {
+                        groupFilterStatus.textContent = '当前未监听任何群聊';
+                        groupFilterStatus.style.color = 'var(--muted-color)';
+                    }
+                } else {
+                    groupFilterStatus.textContent = '当前未监听任何群聊';
+                    groupFilterStatus.style.color = 'var(--muted-color)';
+                }
             } else if (selectedGroupId) {
                 const selectedGroup = groupsData.find(g => g.id === selectedGroupId);
                 if (selectedGroup) {
@@ -1016,10 +1056,10 @@
             }
         }
         
-        // 设置群聊为常用/取消常用
+        // 设置群聊为常用
         async function toggleFavoriteGroup(groupId, isFavorite) {
             try {
-                addDebugMessage(`正在${isFavorite ? '添加' : '移除'}常用群聊: ${groupId}`);
+                addDebugMessage(`${isFavorite ? '设置' : '取消'}常用群聊: ${groupId}`);
                 
                 const response = await fetch('/api/favorite-group', {
                     method: 'POST',
@@ -1035,16 +1075,20 @@
                 const data = await response.json();
                 
                 if (data.status === 'success') {
-                    addDebugMessage(`${isFavorite ? '添加' : '移除'}常用群聊成功: ${groupId}`);
-                    // 重新加载群聊列表以更新显示
-                    loadGroups();
+                    // 更新本地数据
+                    const group = groupsData.find(g => g.id === groupId);
+                    if (group) {
+                        group.is_favorite = isFavorite;
+                        addDebugMessage(`成功${isFavorite ? '设置' : '取消'}常用群聊`);
+                        
+                        // 重新渲染群聊列表以实现置顶效果
+                        renderGroupList();
+                    }
                 } else {
-                    addDebugMessage(`${isFavorite ? '添加' : '移除'}常用群聊失败: ${data.message}`);
-                    alert(`${isFavorite ? '添加' : '移除'}常用群聊失败: ` + data.message);
+                    addDebugMessage(`${isFavorite ? '设置' : '取消'}常用群聊失败: ${data.message}`);
                 }
             } catch (error) {
-                addDebugMessage(`${isFavorite ? '添加' : '移除'}常用群聊错误: ${error.message}`);
-                alert(`${isFavorite ? '添加' : '移除'}常用群聊出错，详情请查看控制台`);
+                addDebugMessage(`${isFavorite ? '设置' : '取消'}常用群聊错误: ${error.message}`);
             }
         }
         
