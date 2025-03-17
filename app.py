@@ -201,9 +201,9 @@ async def websocket_endpoint(websocket: WebSocket):
     
     # 如果有全局活跃群组，则自动设置过滤
     if active_group_id:
-        connection_filter["enabled"] = True
+        connection_filter["enabled"] = False  # 默认不启用过滤
         connection_filter["allowed_groups"] = [active_group_id]
-        print(f"新连接自动设置过滤: 启用=True, 群ID={active_group_id}")
+        print(f"新连接自动设置过滤: 启用=False, 群ID={active_group_id}")
     
     try:
         active_connections.append((websocket, connection_filter))
@@ -285,7 +285,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 save_config()
                                 
                                 # 设置当前连接的过滤
-                                connection_filter["enabled"] = True
+                                connection_filter["enabled"] = False  # 默认不启用过滤
                                 connection_filter["allowed_groups"] = [active_group_id]
                                 
                                 # 广播群组变更消息
@@ -601,7 +601,7 @@ async def check_for_new_messages():
                                 print(f"连接过滤设置: enabled={filter_settings['enabled']}, allowed_groups={filter_settings['allowed_groups']}, 当前消息群ID={group_id}")
                                 
                                 # 如果启用了过滤且当前群ID不在允许列表中，则跳过
-                                if filter_settings['enabled'] and group_id not in filter_settings['allowed_groups']:
+                                if filter_settings['enabled'] and filter_settings['allowed_groups'] and group_id not in filter_settings['allowed_groups']:
                                     print(f"消息被过滤: 群ID {group_id} 不在允许列表中 {filter_settings['allowed_groups']}")
                                     continue
                                 

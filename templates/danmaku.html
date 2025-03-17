@@ -42,6 +42,16 @@
             backface-visibility: hidden;
             transform: translateZ(0);
             pointer-events: none;
+            animation: danmaku-move 8s linear;
+        }
+        
+        @keyframes danmaku-move {
+            from {
+                transform: translateX(100vw);
+            }
+            to {
+                transform: translateX(-100%);
+            }
         }
         
         #debug-info {
@@ -258,8 +268,11 @@
                 return;
             }
             
+            // 解析命令和文本内容
+            const { content, commands } = parseCommands(text);
+            
             // 防止XSS
-            const safeText = String(text).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const safeText = String(content).replace(/</g, '&lt;').replace(/>/g, '&gt;');
             const trackHeight = danmakuContainer.clientHeight - config.fontSize;
             
             const danmaku = document.createElement('div');
@@ -268,35 +281,55 @@
             danmaku.style.fontSize = `${config.fontSize}px`;
             danmaku.setAttribute('data-message-id', messageId || '');
             
-            // 随机颜色
-            const colors = [
-                '#FFFFFF', // 白色
-                '#FF8C00', // 深橙色
-                '#FFD700', // 金色
-                '#00BFFF', // 深天蓝
-                '#7FFF00', // 查特酸绿
-                '#FF69B4', // 热粉红
-                '#00FFFF', // 青色
-                '#F0E68C', // 卡其色
-                '#FFA07A', // 浅鲑鱼色
-                '#00FA9A'  // 中春绿色
-            ];
+            // 使用更美观的色号
+            const colorCommands = {
+                '红': '#FF3B2F',    // 红色
+                '橙': '#FF9500',    // 橙色
+                '黄': '#FFCC02',    // 黄色
+                '绿': '#35C759',    // 绿色
+                '蓝': '#31ADE6',    // 蓝色
+                '靛': '#5856D7',    // 靛青色
+                '紫': '#AF52DE',    // 紫色
+                '灰': '#9E9E9E'     // 中性灰色
+            };
             
-            // 使用用户ID来选择一个固定的颜色（如果有userId）
-            let colorIndex = 0;
-            if (userId) {
-                const userHash = String(userId).split('').reduce((a, b) => {
-                    return a + b.charCodeAt(0);
-                }, 0);
-                colorIndex = userHash % colors.length;
+            // 深色弹幕需要描边的颜色映射
+            const needsOutlineColors = {
+                '#5856D7': true,  // 靛青色
+                '#AF52DE': true,  // 紫色
+                '#35C759': true,  // 绿色
+                '#31ADE6': true,  // 蓝色
+            };
+            
+            // 应用颜色命令
+            if (commands.color) {
+                danmaku.style.color = commands.color;
             } else {
-                colorIndex = Math.floor(Math.random() * colors.length);
+                danmaku.style.color = colorCommands[commands.color] || '#FFFFFF';
             }
             
-            danmaku.style.color = colors[colorIndex];
+            // 为深色弹幕添加描边
+            if (commands.needsOutline) {
+                danmaku.style.textShadow = '0 0 2px #FFF, 0 0 2px #FFF, 0 0 2px #FFF, 0 0 2px #FFF';
+            }
             
-            // 随机垂直位置
-            const top = Math.floor(Math.random() * trackHeight);
+            // 应用位置命令
+            let top;
+            let isFixed = false;
+            
+            if (commands.position === 'top') {
+                // 居中置顶
+                top = 10;
+                isFixed = true;
+            } else if (commands.position === 'bottom') {
+                // 居中置底
+                top = danmakuContainer.clientHeight - config.fontSize - 10;
+                isFixed = true;
+            } else {
+                // 默认在上半部分随机位置
+                top = Math.floor(Math.random() * (trackHeight / 2));
+            }
+            
             danmaku.style.top = `${top}px`;
             
             // 添加到容器
@@ -317,65 +350,116 @@
             const lengthFactor = Math.min(3000, Math.max(0, safeText.length * 50));
             const duration = baseDuration + lengthFactor;
             
-            console.log(`弹幕: "${safeText.substring(0, 20)}${safeText.length > 20 ? '...' : ''}" 宽度=${danmakuWidth}px, 持续时间=${duration}ms`);
+            console.log(`弹幕: "${safeText.substring(0, 20)}${safeText.length > 20 ? '...' : ''}" 宽度=${danmakuWidth}px, 持续时间=${duration}ms, 命令=${JSON.stringify(commands)}`);
             
             // 增加活跃弹幕计数
             activeDanmakuCount++;
             updateDanmakuCount();
             
-            if (config.animationMethod === 'transform') {
-                // 确保弹幕起始位置在屏幕外右侧
-                danmaku.style.transform = `translateX(${startPosition}px)`;
+            // 应用动画
+            if (isFixed) {
+                // 固定位置的弹幕使用淡入淡出动画
+                danmaku.style.left = '50%';
+                danmaku.style.transform = 'translateX(-50%)';
+                danmaku.style.whiteSpace = 'nowrap';
                 
-                // 强制浏览器重绘，以确保起始位置已应用
-                void danmaku.offsetWidth;
+                // 直接出现和消失，不使用渐入渐出效果
+                danmaku.style.animation = 'none';
+                danmaku.style.opacity = '1';
                 
-                // 设置过渡属性，确保动画流畅
-                danmaku.style.transition = `transform ${duration}ms linear`;
-                
-                // 设置延迟，确保上一步的样式已应用
-                requestAnimationFrame(() => {
-                    // 开始动画，移动到目标位置
-                    danmaku.style.transform = `translateX(${endPosition}px)`;
-                    
-                    // 动画结束后移除弹幕
-                    setTimeout(() => {
-                        if (danmaku && danmaku.parentNode) {
-                            danmaku.parentNode.removeChild(danmaku);
-                            activeDanmakuCount--;
-                            updateDanmakuCount();
-                        }
-                    }, duration + 200); // 增加延迟确保动画完成后再移除
-                });
-            } else {
-                // 使用left属性实现动画(兼容性更好但性能较差)
-                danmaku.style.left = `${startPosition}px`;
-                
-                // 创建动画帧
-                let startTime = null;
-                
-                function animateFrame(timestamp) {
-                    if (!startTime) startTime = timestamp;
-                    const elapsed = timestamp - startTime;
-                    
-                    if (elapsed < duration) {
-                        const progress = elapsed / duration;
-                        const currentPos = startPosition - progress * (startPosition - endPosition);
-                        danmaku.style.left = `${currentPos}px`;
-                        requestAnimationFrame(animateFrame);
-                    } else {
-                        // 动画结束，移除弹幕
-                        if (danmaku && danmaku.parentNode) {
-                            danmaku.parentNode.removeChild(danmaku);
-                            activeDanmakuCount--;
-                            updateDanmakuCount();
-                        }
+                // 设置定时器在指定时间后移除弹幕
+                setTimeout(() => {
+                    if (danmakuContainer.contains(danmaku)) {
+                        danmakuContainer.removeChild(danmaku);
+                        activeDanmakuCount--;
+                        updateDanmakuCount();
                     }
-                }
+                }, duration);
+            } else {
+                // 普通弹幕使用从右到左的动画
+                const animationDuration = duration / 1000;
+                danmaku.style.animation = `danmaku-move ${animationDuration}s linear`;
+                danmaku.style.left = '0';
+                danmaku.style.right = 'auto';
                 
-                // 启动动画
-                requestAnimationFrame(animateFrame);
+                // 监听动画结束事件，移除弹幕
+                danmaku.addEventListener('animationend', () => {
+                    if (danmakuContainer.contains(danmaku)) {
+                        danmakuContainer.removeChild(danmaku);
+                        activeDanmakuCount--;
+                        updateDanmakuCount();
+                    }
+                });
             }
+        }
+        
+        // 解析命令和文本内容
+        function parseCommands(text) {
+            // 默认结果
+            const result = {
+                content: text,
+                commands: {
+                    position: null,
+                    color: null
+                }
+            };
+            
+            // 分割文本和命令
+            const parts = text.split(' ');
+            if (parts.length <= 1) {
+                return result;
+            }
+            
+            // 检查是否有命令
+            const possibleCommands = parts.slice(1);
+            const contentParts = [parts[0]];
+            
+            // 定义支持的命令
+            const positionCommands = {
+                '居中': 'top',
+                '下居中': 'bottom'
+            };
+            
+            // 使用更美观的色号
+            const colorCommands = {
+                '红': '#FF3B2F',    // 红色
+                '橙': '#FF9500',    // 橙色
+                '黄': '#FFCC02',    // 黄色
+                '绿': '#35C759',    // 绿色
+                '蓝': '#31ADE6',    // 蓝色
+                '靛': '#5856D7',    // 靛青色
+                '紫': '#AF52DE',    // 紫色
+                '灰': '#9E9E9E'     // 中性灰色
+            };
+            
+            // 深色弹幕需要描边的颜色映射
+            const needsOutlineColors = {
+                '#5856D7': true,  // 靛青色
+                '#AF52DE': true,  // 紫色
+                '#35C759': true,  // 绿色
+                '#31ADE6': true,  // 蓝色
+            };
+            
+            // 检查每个可能的命令
+            for (const cmd of possibleCommands) {
+                if (positionCommands[cmd]) {
+                    result.commands.position = positionCommands[cmd];
+                } else if (colorCommands[cmd]) {
+                    result.commands.color = colorCommands[cmd];
+                    // 检查是否需要描边
+                    if (needsOutlineColors[colorCommands[cmd]]) {
+                        result.commands.needsOutline = true;
+                    }
+                } else {
+                    // 如果不是命令，则是内容的一部分
+                    contentParts.push(cmd);
+                }
+            }
+            
+            // 重建内容
+            result.content = contentParts.join(' ');
+            
+            return result;
         }
         
         // 更新弹幕计数显示
