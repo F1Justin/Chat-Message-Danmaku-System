@@ -245,8 +245,8 @@ async def websocket_endpoint(websocket: WebSocket):
         await broadcast_stats()
         
         while True:
-            data = await websocket.receive_text()
             try:
+                data = await websocket.receive_text()
                 message = json.loads(data)
                 
                 if message["type"] == "command":
@@ -349,21 +349,32 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "status": "error",
                                 "message": "无效的速度值，请输入5到60之间的整数"
                             }))
+                logging.debug(f"WebSocket loop processed message: {data[:50]}...") # 添加循环日志
             except json.JSONDecodeError:
-                print("非JSON消息")
+                logging.warning("Received invalid JSON message") # 用 warning
             except Exception as e:
-                print(f"处理WebSocket消息时出错: {str(e)}")
+                logging.error(f"Error processing WebSocket message: {str(e)}", exc_info=True) # 记录完整错误
                 
-    except WebSocketDisconnect:
+    except WebSocketDisconnect as e:
+        # 尝试记录关闭代码和原因
+        logging.info(f"WebSocket connection closed. Code: {e.code}, Reason: {e.reason}")
         active_connections.remove((websocket, connection_filter))
         await broadcast_stats()
         logging.info("connection closed")
     except Exception as e:
-        print(f"WebSocket连接错误: {str(e)}")
+        # 记录更详细的 WebSocket 错误
+        logging.error(f"Unhandled WebSocket error: {str(e)}", exc_info=True)
         if (websocket, connection_filter) in active_connections:
             active_connections.remove((websocket, connection_filter))
             await broadcast_stats()
         logging.info("connection closed")
+    finally:
+         # 确保连接总是被移除
+        if (websocket, connection_filter) in active_connections:
+            active_connections.remove((websocket, connection_filter))
+            logging.info(f"Connection removed in finally block. Current connections: {len(active_connections)}")
+            await broadcast_stats() # 确保广播更新
+        logging.info("Exiting websocket_endpoint handler.") # 确认函数结束
 
 # 主页
 @app.get("/", response_class=HTMLResponse)
