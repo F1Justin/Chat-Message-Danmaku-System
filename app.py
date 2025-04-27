@@ -101,12 +101,15 @@ group_aliases: Dict[str, str] = {}
 # 常用群组列表
 favorite_groups: List[str] = []
 
+# 弹幕速度（秒）
+danmaku_speed: int = 10  # 默认10秒
+
 # 配置文件路径
 CONFIG_FILE = "config.json"
 
 # 加载配置
 def load_config():
-    global group_aliases, favorite_groups, active_group_id
+    global group_aliases, favorite_groups, active_group_id, danmaku_speed
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
@@ -114,7 +117,8 @@ def load_config():
                 group_aliases = config.get('group_aliases', {})
                 favorite_groups = config.get('favorite_groups', [])
                 active_group_id = config.get('active_group_id')
-                print(f"已加载配置: {len(group_aliases)}个群别名, {len(favorite_groups)}个常用群组")
+                danmaku_speed = config.get('danmaku_speed', 10)
+                print(f"已加载配置: {len(group_aliases)}个群别名, {len(favorite_groups)}个常用群组, 弹幕速度={danmaku_speed}s")
         else:
             print("配置文件不存在，使用默认设置")
     except Exception as e:
@@ -122,11 +126,13 @@ def load_config():
 
 # 保存配置
 def save_config():
+    global danmaku_speed
     try:
         config = {
             'group_aliases': group_aliases,
             'favorite_groups': favorite_groups,
-            'active_group_id': active_group_id
+            'active_group_id': active_group_id,
+            'danmaku_speed': danmaku_speed
         }
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
@@ -141,6 +147,17 @@ async def broadcast_stats():
         "connections": len(active_connections),
     }
     await broadcast_to_all(json.dumps(stats))
+
+# 广播设置给所有连接
+async def broadcast_setting(setting_key: str, setting_value: Any):
+    """广播单个设置项给所有连接"""
+    message = {
+        "type": "setting_update",
+        "key": setting_key,
+        "value": setting_value
+    }
+    await broadcast_to_all(json.dumps(message))
+    print(f"已广播设置更新: {setting_key}={setting_value}")
 
 # 广播消息给所有连接
 async def broadcast_to_all(message: str):
@@ -189,7 +206,7 @@ async def get_group_id_from_session_id(session_id: str) -> Optional[str]:
 # 处理WebSocket消息
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global active_group_id
+    global active_group_id, danmaku_speed
     await websocket.accept()
     logging.info("connection open")
     
@@ -208,8 +225,14 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         active_connections.append((websocket, connection_filter))
         
-        # 发送初始连接成功消息
-        await websocket.send_text(json.dumps({"type": "connection", "message": "连接成功"}))
+        # 发送初始连接成功消息，包含当前设置
+        await websocket.send_text(json.dumps({
+            "type": "connection",
+            "message": "连接成功",
+            "settings": {
+                "danmaku_speed": danmaku_speed
+            }
+        }))
         
         # 如果有全局活跃群组，发送群组信息
         if active_group_id:
@@ -257,22 +280,6 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "group_ids": group_ids
                             }
                         }))
-                    elif message["action"] == "broadcast_settings":
-                        # 处理广播设置命令
-                        settings = message.get("settings", {})
-                        broadcast_message = {
-                            "type": "settings",
-                            "settings": settings
-                        }
-                        # 广播设置到所有连接
-                        await broadcast_to_all(json.dumps(broadcast_message))
-                        # 发送确认消息
-                        await websocket.send_text(json.dumps({
-                            "type": "command_response",
-                            "action": "broadcast_settings",
-                            "status": "success",
-                            "message": "设置已广播到所有客户端"
-                        }))
                     elif message["action"] == "set_active_group":
                         # 设置全局活跃群组
                         session_id = message.get("group_id")
@@ -319,6 +326,29 @@ async def websocket_endpoint(websocket: WebSocket):
                             "type": "active_group",
                             "group_id": active_group_id
                         }))
+                    elif message["action"] == "set_danmaku_speed":
+                        new_speed = message.get("speed")
+                        try:
+                            speed_val = int(new_speed)
+                            if 5 <= speed_val <= 60:
+                                danmaku_speed = speed_val
+                                save_config()
+                                await broadcast_setting("danmaku_speed", danmaku_speed)
+                                await websocket.send_text(json.dumps({
+                                    "type": "command_response",
+                                    "action": "set_danmaku_speed",
+                                    "status": "success",
+                                    "message": f"弹幕速度已设置为 {danmaku_speed} 秒"
+                                }))
+                            else:
+                                raise ValueError("速度必须在 5 到 60 之间")
+                        except (ValueError, TypeError):
+                            await websocket.send_text(json.dumps({
+                                "type": "command_response",
+                                "action": "set_danmaku_speed",
+                                "status": "error",
+                                "message": "无效的速度值，请输入5到60之间的整数"
+                            }))
             except json.JSONDecodeError:
                 print("非JSON消息")
             except Exception as e:
@@ -581,17 +611,22 @@ async def check_for_new_messages():
                         
                         # 获取群ID
                         group_id = session.id2
-                        
+
                         # 处理消息内容，移除前缀
                         content = message.plain_text
                         # 简单处理一下消息内容，去除可能的前缀
-                        if ": " in content and content.count(": ") == 1:
-                            content = content.split(": ", 1)[1]
-                        elif ":" in content and content.count(":") == 1:
-                            content = content.split(":", 1)[1]
-                        
+                        if isinstance(content, str):
+                            if ": " in content and content.count(": ") == 1:
+                                content = content.split(": ", 1)[1]
+                            elif ":" in content and content.count(":") == 1:
+                                # Handle cases like "User:Message" -> "Message"
+                                parts = content.split(":", 1)
+                                # Avoid splitting time format like "17:14:03" if it's the whole message
+                                if not parts[0].isdigit() or (len(parts) > 1 and not parts[1].isdigit()):
+                                     content = parts[1].lstrip() # Use lstrip to remove leading space if any
+
                         # 调试打印
-                        print(f"处理新消息: 群={group_id}, 用户={session.id1}, 时间={message_time_utc} (UTC) / {message_time_local} (本地), 内容={content[:20]}...")
+                        print(f"处理新消息: 群={group_id}, 用户={session.id1}, 时间={message_time_utc} (UTC) / {message_time_local} (本地), 内容={str(content)[:20]}...")
                         
                         # 广播消息到所有活跃的WebSocket连接
                         sent_count = 0
@@ -617,7 +652,7 @@ async def check_for_new_messages():
                                 
                                 await connection.send_text(json.dumps(danmaku_message))
                                 sent_count += 1
-                                print(f"发送弹幕成功: 群={group_id}, 内容={content[:20]}...")
+                                print(f"发送弹幕成功: 群={group_id}, 内容={str(content)[:20]}...")
                             except Exception as e:
                                 print(f"发送消息时出错: {str(e)}")
                         

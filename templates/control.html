@@ -481,6 +481,10 @@
                 <input type="number" id="font-size" value="32" min="16" max="48">
             </div>
             <div class="form-group">
+                <label for="danmakuSpeed">弹幕速度 (5-60秒): <span id="speedValue">10</span> 秒</label>
+                <input type="range" id="danmakuSpeed" name="danmakuSpeed" min="5" max="60" value="10" style="width: 100%;">
+            </div>
+            <div class="form-group">
                 <button id="apply-settings">应用设置</button>
                 <button id="connect-ws" class="secondary">重新连接</button>
             </div>
@@ -519,6 +523,9 @@
         const connectButton = document.getElementById('connect-ws');
         const debugPanel = document.getElementById('debug-panel');
         const tabButtons = document.querySelectorAll('.tab-button');
+        const favoriteGroupsList = document.getElementById('favoriteGroupsList'); // 假设有收藏列表
+        const danmakuSpeedSlider = document.getElementById('danmakuSpeed'); // 速度滑块引用
+        const speedValueLabel = document.getElementById('speedValue'); // 速度值显示标签引用
         
         // 状态变量
         let socket = null;
@@ -532,6 +539,7 @@
         let latestMessages = new Set(); // 使用Set存储最近消息ID，防止重复
         let isPreviewReady = false; // 预览框是否准备好接收消息
         let currentTab = 'all'; // 当前选中的标签页
+        let allGroups = []; // 存储所有群组信息
         
         // 初始化
         function init() {
@@ -1148,9 +1156,6 @@
                                 }, '*');
                                 addDebugMessage(`已向预览框发送弹幕: ${data.content.substring(0, 15)}...`);
                             }
-                            
-                            // 添加到最近消息列表
-                            addRecentMessage(data);
                         }
                     } else if (data.type === 'active_group') {
                         // 更新活跃群组
@@ -1170,6 +1175,10 @@
                         addDebugMessage(`命令响应: ${data.action} - ${data.message}`);
                         if (data.debug_info) {
                             addDebugMessage(`调试信息: ${JSON.stringify(data.debug_info)}`);
+                        }
+                    } else if (data.type === 'setting_update') { // 处理设置更新广播
+                        if (data.key === 'danmaku_speed') {
+                            updateSpeedUI(data.value); // 更新速度滑块
                         }
                     }
                 } catch (error) {
@@ -1200,6 +1209,37 @@
         
         // 重新连接按钮
         connectButton.addEventListener('click', connectWebSocket);
+        
+        // 更新速度滑块和标签的函数
+        function updateSpeedUI(speed) {
+            if (danmakuSpeedSlider && speedValueLabel) {
+                danmakuSpeedSlider.value = speed;
+                speedValueLabel.textContent = speed;
+                addDebugMessage(`弹幕速度更新为: ${speed} 秒`);
+            }
+        }
+        
+        // 添加速度滑块的事件监听
+        if (danmakuSpeedSlider && speedValueLabel) {
+            danmakuSpeedSlider.addEventListener('input', () => {
+                speedValueLabel.textContent = danmakuSpeedSlider.value; // 实时更新标签
+            });
+
+            danmakuSpeedSlider.addEventListener('change', () => { // 在释放滑块时发送命令
+                const newSpeed = parseInt(danmakuSpeedSlider.value);
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    const command = {
+                        type: "command",
+                        action: "set_danmaku_speed",
+                        speed: newSpeed
+                    };
+                    socket.send(JSON.stringify(command));
+                    addDebugMessage(`发送命令: 设置弹幕速度为 ${newSpeed}`);
+                } else {
+                    addDebugMessage("WebSocket 未连接，无法发送速度设置");
+                }
+            });
+        }
         
         // 初始化
         init();

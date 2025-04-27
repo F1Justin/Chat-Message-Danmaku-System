@@ -7,6 +7,7 @@
     <style>
         :root {
             --danmaku-font-size: 32px;
+            --danmaku-duration: 10s;
         }
         
         * {
@@ -42,7 +43,7 @@
             backface-visibility: hidden;
             transform: translateZ(0);
             pointer-events: none;
-            animation: danmaku-move 8s linear;
+            animation: danmaku-move var(--danmaku-duration) linear;
         }
         
         @keyframes danmaku-move {
@@ -96,6 +97,9 @@
             danmakuContainer = document.getElementById('container');
             debugPanel = document.getElementById('debug-info');
             
+            // 设置初始弹幕速度（默认值）
+            setDanmakuSpeed(10); // 设置默认值
+            
             // 检查URL参数
             const urlParams = new URLSearchParams(window.location.search);
             if (urlParams.has('debug')) {
@@ -128,6 +132,10 @@
                         filterSettings.enabled = data.enabled;
                         filterSettings.groupId = data.groupId;
                         addDebugMessage(`过滤设置已更新: 启用=${filterSettings.enabled}, 群ID=${filterSettings.groupId}`);
+                    } else if (data.action === 'setting_update') {
+                        if (data.key === 'danmaku_speed') {
+                            setDanmakuSpeed(data.value);
+                        }
                     }
                 } catch (error) {
                     addDebugMessage(`处理控制面板消息错误: ${error.message}`);
@@ -162,9 +170,10 @@
                     if (data.type === 'danmaku') {
                         // 处理弹幕消息
                         processDanmaku(data);
-                    } else if (data.type === 'settings') {
-                        // 处理设置更新
-                        updateSettings(data.settings);
+                    } else if (data.type === 'setting_update') {
+                        if (data.key === 'danmaku_speed') {
+                            setDanmakuSpeed(data.value);
+                        }
                     } else if (data.type === 'active_group') {
                         // 处理活跃群组设置
                         addDebugMessage(`收到活跃群组: ${data.group_id}`);
@@ -174,6 +183,9 @@
                     } else if (data.type === 'connection') {
                         // 连接消息
                         addDebugMessage(`连接状态: ${data.message}`);
+                        if (data.settings && data.settings.danmaku_speed) {
+                            setDanmakuSpeed(data.settings.danmaku_speed);
+                        }
                     }
                 } catch (error) {
                     addDebugMessage(`处理WebSocket消息错误: ${error.message}`);
@@ -194,6 +206,16 @@
             socket.onerror = function(error) {
                 addDebugMessage(`WebSocket错误: ${error.message}`);
             };
+        }
+        
+        // 设置弹幕速度的函数
+        function setDanmakuSpeed(speed) {
+            if (typeof speed === 'number' && speed >= 5 && speed <= 60) {
+                document.documentElement.style.setProperty('--danmaku-duration', speed + 's');
+                addDebugMessage(`弹幕速度已设置为: ${speed} 秒`);
+            } else {
+                addDebugMessage(`无效的速度值: ${speed}`);
+            }
         }
         
         // 处理弹幕消息
@@ -222,7 +244,7 @@
             }
             
             // 创建弹幕元素
-            createDanmaku(data.content);
+            createDanmaku(data.content, data.user_id, data.message_id);
             
             // 添加调试信息
             addDebugMessage(`显示弹幕: ${data.content.substring(0, 15)}...`);
@@ -253,7 +275,7 @@
                 }
                 
                 // 创建弹幕元素
-                createDanmaku(message.content);
+                createDanmaku(message.content, message.user_id, message.message_id);
                 displayedCount++;
             });
             
@@ -376,12 +398,10 @@
                     }
                 }, duration);
             } else {
-                // 普通弹幕使用从右到左的动画
-                const animationDuration = duration / 1000;
-                danmaku.style.animation = `danmaku-move ${animationDuration}s linear`;
+                // 普通弹幕使用从右到左的动画 - 由 CSS 控制
                 danmaku.style.left = '0';
                 danmaku.style.right = 'auto';
-                
+
                 // 监听动画结束事件，移除弹幕
                 danmaku.addEventListener('animationend', () => {
                     if (danmakuContainer.contains(danmaku)) {
