@@ -17,7 +17,7 @@
         }
         
         body {
-            background-color: rgba(0, 0, 0, 0.8);
+            background-color: transparent;
             color: white;
             overflow: hidden;
             font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', 'Helvetica Neue', Ubuntu, 'Noto Sans', 'Source Han Sans CN', 'Source Han Sans SC', sans-serif;
@@ -89,7 +89,7 @@
         let processedMessages = new Set(); // 用于存储已处理的消息ID，防止重复
         let filterSettings = {
             enabled: false,
-            groupId: null
+            allowed_groups: new Set() // Store allowed group_ids as a Set for efficient lookup
         };
         
         // 初始化
@@ -128,10 +128,9 @@
                         // 更新设置
                         updateSettings(data.settings);
                     } else if (data.action === 'setFilter') {
-                        // 设置过滤
                         filterSettings.enabled = data.enabled;
-                        filterSettings.groupId = data.groupId;
-                        addDebugMessage(`过滤设置已更新: 启用=${filterSettings.enabled}, 群ID=${filterSettings.groupId}`);
+                        filterSettings.allowed_groups = new Set(data.allowed_groups || []); // Ensure it's a Set
+                        addDebugMessage(`过滤设置已更新: 启用=${filterSettings.enabled}, 允许群组=${JSON.stringify(Array.from(filterSettings.allowed_groups))}`);
                     } else if (data.action === 'setting_update') {
                         if (data.key === 'danmaku_speed') {
                             setDanmakuSpeed(data.value);
@@ -174,12 +173,23 @@
                         if (data.key === 'danmaku_speed') {
                             setDanmakuSpeed(data.value);
                         }
+                    } else if (data.type === 'broadcast_filter_update') {
+                        addDebugMessage(`过滤器更新: enabled=${data.filter_enabled}, 允许群组=${JSON.stringify(data.allowed_groups)}`);
+                        const oldFilterEnabled = filterSettings.enabled;
+                        const oldAllowedGroupsSize = filterSettings.allowed_groups.size;
+
+                        filterSettings.enabled = data.filter_enabled;
+                        filterSettings.allowed_groups = new Set(data.allowed_groups || []);
+
+                        // 如果过滤器从"启用"变为"禁用且无允许群组"（即取消全部监听）
+                        // 或者从"启用且有群组"变为"启用但允许群组为空"
+                        if ((!filterSettings.enabled && filterSettings.allowed_groups.size === 0) || 
+                            (filterSettings.enabled && filterSettings.allowed_groups.size === 0 && (oldFilterEnabled && oldAllowedGroupsSize > 0))) {
+                            addDebugMessage("过滤器已禁用或清空，清除当前所有弹幕。");
+                            clearAllDanmaku();
+                        }
                     } else if (data.type === 'active_group') {
-                        // 处理活跃群组设置
-                        addDebugMessage(`收到活跃群组: ${data.group_id}`);
-                        filterSettings.enabled = true;
-                        filterSettings.groupId = data.group_id;
-                        addDebugMessage(`过滤设置已更新: 启用=true, 群ID=${data.group_id}`);
+                        addDebugMessage(`收到旧的 'active_group' 消息 (可能需要更新): ${data.group_id}`);
                     } else if (data.type === 'connection') {
                         // 连接消息
                         addDebugMessage(`连接状态: ${data.message}`);
@@ -227,13 +237,10 @@
             }
             
             // 检查过滤设置
-            if (filterSettings.enabled && filterSettings.groupId) {
-                // 获取消息的群ID
+            if (filterSettings.enabled && filterSettings.allowed_groups.size > 0) {
                 const messageGroupId = data.group_id;
-                
-                // 如果消息不是来自选定的群，则跳过
-                if (messageGroupId !== filterSettings.groupId) {
-                    addDebugMessage(`过滤消息: 群ID=${messageGroupId}, 不匹配当前过滤群ID=${filterSettings.groupId}`);
+                if (!filterSettings.allowed_groups.has(messageGroupId)) {
+                    addDebugMessage(`过滤消息: 群ID=${messageGroupId}, 不在允许列表 ${JSON.stringify(Array.from(filterSettings.allowed_groups))} 中`);
                     return;
                 }
             }
@@ -262,10 +269,9 @@
             let displayedCount = 0;
             messages.forEach(message => {
                 // 检查过滤设置
-                if (filterSettings.enabled && filterSettings.groupId) {
-                    // 如果消息不是来自选定的群，则跳过
-                    if (message.group_id !== filterSettings.groupId) {
-                        return;
+                if (filterSettings.enabled && filterSettings.allowed_groups.size > 0) {
+                    if (!filterSettings.allowed_groups.has(message.group_id)) {
+                        return; // Skip if not in allowed groups
                     }
                 }
                 

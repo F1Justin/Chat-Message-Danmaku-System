@@ -361,6 +361,11 @@
             background-color: rgba(var(--primary-color-rgb), 0.3);
         }
         
+        .group-item.listening {
+            background-color: rgba(var(--primary-color-rgb), 0.3);
+            font-weight: bold;
+        }
+        
         .group-info {
             flex: 1;
             display: flex;
@@ -398,6 +403,10 @@
         
         .error-message {
             color: var(--danger-color);
+        }
+        
+        .group-item input[type="checkbox"] {
+            margin-right: 10px;
         }
     </style>
 </head>
@@ -441,7 +450,8 @@
                 </div>
             </div>
             <div class="form-group">
-                <button id="enable-filter" class="primary">监听该群</button>
+                <button id="apply-selected-groups" class="primary">应用选中群聊</button>
+                <button id="clear-all-listening" class="danger">取消所有监听</button>
                 <button id="show-recent" class="secondary">显示最近消息</button>
             </div>
             <div id="group-filter-status">当前未监听任何群聊</div>
@@ -510,7 +520,8 @@
         const groupSearch = document.getElementById('group-search');
         const groupList = document.getElementById('group-list');
         const refreshGroupsButton = document.getElementById('refresh-groups');
-        const enableFilterButton = document.getElementById('enable-filter');
+        const applySelectedGroupsButton = document.getElementById('apply-selected-groups');
+        const clearAllListeningButton = document.getElementById('clear-all-listening');
         const showRecentButton = document.getElementById('show-recent');
         const groupFilterStatus = document.getElementById('group-filter-status');
         const previewFrame = document.getElementById('preview-frame');
@@ -540,6 +551,8 @@
         let isPreviewReady = false; // 预览框是否准备好接收消息
         let currentTab = 'all'; // 当前选中的标签页
         let allGroups = []; // 存储所有群组信息
+        let listenedSessionIds = new Set(); // Stores session_ids of groups this client is listening to
+        let lastFocusedGroupIdHint = null; // From backend, for UI pre-selection
         
         // 初始化
         function init() {
@@ -701,19 +714,17 @@
                         return;
                     }
                     
-                    // 渲染群聊列表
-                    renderGroupList();
-                    
-                    // 如果有活跃群组，自动选中
-                    if (data.active_group_id) {
-                        const activeGroup = groupsData.find(g => g.group_id === data.active_group_id);
-                        if (activeGroup) {
-                            selectedGroupId = activeGroup.id;
-                            filterEnabled = true;
-                            updateFilterStatus();
-                            addDebugMessage(`自动选中活跃群组: ${activeGroup.group_id}`);
+                    // Pre-check based on lastFocusedGroupIdHint if available and no groups are listened to yet
+                    if (lastFocusedGroupIdHint && listenedSessionIds.size === 0) {
+                        const hintGroup = groupsData.find(g => g.group_id === lastFocusedGroupIdHint);
+                        if (hintGroup) {
+                            listenedSessionIds.add(hintGroup.id);
+                            addDebugMessage(`根据后端提示，预选群组: ${hintGroup.group_id} (session ID: ${hintGroup.id})`);
                         }
                     }
+                    
+                    // 渲染群聊列表
+                    renderGroupList();
                     
                     addDebugMessage(`成功加载 ${groupsData.length} 个群聊`);
                 } else {
@@ -749,7 +760,6 @@
             // 清空列表
             groupList.innerHTML = '';
             
-            // 如果没有群聊，显示提示信息
             if (filteredGroups.length === 0) {
                 groupList.innerHTML = '<div class="empty-message">没有找到匹配的群聊</div>';
                 return;
@@ -769,68 +779,65 @@
             filteredGroups.forEach(group => {
                 const groupItem = document.createElement('div');
                 groupItem.className = 'group-item';
-                if (group.id === selectedGroupId) {
-                    groupItem.classList.add('selected');
+                // Add 'listening' class if this group is in listenedSessionIds
+                if (listenedSessionIds.has(group.id)) {
+                    groupItem.classList.add('listening');
                 }
                 
-                // 如果是常用群聊，添加特殊样式
-                if (group.is_favorite) {
-                    groupItem.classList.add('favorite');
-                }
-                
-                // 显示群ID和别名
                 const displayName = group.alias ? `${group.alias} (${group.group_id})` : `群 ${group.group_id}`;
-                
-                // 创建群聊信息区域
-                const groupInfo = document.createElement('div');
+
+                // Checkbox for multi-select
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.id = `group-checkbox-${group.id}`;
+                checkbox.value = group.id;
+                checkbox.checked = listenedSessionIds.has(group.id);
+                checkbox.addEventListener('change', () => {
+                    if (checkbox.checked) {
+                        listenedSessionIds.add(group.id);
+                    } else {
+                        listenedSessionIds.delete(group.id);
+                    }
+                    // No immediate send on checkbox change, user clicks "Apply"
+                    // updateFilterStatus(); // Update status immediately or on apply?
+                });
+
+                const groupInfo = document.createElement('label'); // Use label for checkbox
+                groupInfo.htmlFor = checkbox.id; 
                 groupInfo.className = 'group-info';
                 groupInfo.innerHTML = `
                     <div class="group-name">${displayName}</div>
                     <div class="group-actions">
-                        <button class="action-button edit-alias" title="编辑别名">✏️</button>
-                        <button class="action-button toggle-favorite" title="${group.is_favorite ? '取消常用' : '设为常用'}">${group.is_favorite ? '★' : '☆'}</button>
+                        <button class="action-button edit-alias" data-groupid="${group.group_id}" data-alias="${group.alias || ''}" title="编辑别名">✏️</button>
+                        <button class="action-button toggle-favorite" data-sessionid="${group.id}" data-isfavorite="${group.is_favorite}" title="${group.is_favorite ? '取消常用' : '设为常用'}">${group.is_favorite ? '★' : '☆'}</button>
                     </div>
                 `;
                 
+                groupItem.appendChild(checkbox);
                 groupItem.appendChild(groupInfo);
-                
-                // 点击群聊项选中
-                groupItem.addEventListener('click', (e) => {
-                    // 如果点击的是操作按钮，不触发选中
-                    if (e.target.closest('.action-button')) {
-                        return;
-                    }
-                    
-                    // 移除所有选中状态
-                    document.querySelectorAll('.group-item').forEach(item => {
-                        item.classList.remove('selected');
-                    });
-                    
-                    // 添加选中状态
-                    groupItem.classList.add('selected');
-                    
-                    // 更新选中的群聊ID
-                    selectedGroupId = group.id;
-                    updateFilterStatus();
-                });
-                
-                // 编辑别名按钮点击事件
-                groupItem.querySelector('.edit-alias').addEventListener('click', () => {
-                    const currentAlias = group.alias || '';
+
+                // Edit alias button
+                groupItem.querySelector('.edit-alias').addEventListener('click', (e) => {
+                    e.preventDefault(); // Prevent label click from toggling checkbox
+                    const currentAlias = e.target.closest('.action-button').dataset.alias;
+                    const targetGroupId = e.target.closest('.action-button').dataset.groupid;
                     const newAlias = prompt('请输入群聊别名:', currentAlias);
-                    
-                    if (newAlias !== null) {  // 用户点击了确定
-                        setGroupAlias(group.group_id, newAlias);
+                    if (newAlias !== null) {
+                        setGroupAlias(targetGroupId, newAlias);
                     }
                 });
-                
-                // 设为常用按钮点击事件
-                groupItem.querySelector('.toggle-favorite').addEventListener('click', () => {
-                    toggleFavoriteGroup(group.id, !group.is_favorite);
+
+                // Toggle favorite button
+                groupItem.querySelector('.toggle-favorite').addEventListener('click', (e) => {
+                    e.preventDefault(); // Prevent label click from toggling checkbox
+                    const sessionId = e.target.closest('.action-button').dataset.sessionid;
+                    const isFavorite = e.target.closest('.action-button').dataset.isfavorite === 'true';
+                    toggleFavoriteGroup(sessionId, !isFavorite);
                 });
                 
                 groupList.appendChild(groupItem);
             });
+            updateFilterStatus(); // Update status after rendering
         }
         
         // 监听群聊搜索
@@ -857,15 +864,25 @@
         
         // 显示最近消息
         async function showRecentMessages() {
-            if (!selectedGroupId) {
-                alert('请先选择一个群聊');
+            if (listenedSessionIds.size === 0) {
+                alert('请至少选择并应用一个群聊进行监听。');
                 return;
             }
-            
+            // For simplicity, show recent messages for the *first* group in the listened set
+            const firstSelectedSessionId = listenedSessionIds.values().next().value;
+            if (firstSelectedSessionId) {
+                showRecentMessagesForGroup(firstSelectedSessionId);
+            } else {
+                alert('没有选中的群聊来显示最近消息。');
+            }
+        }
+        
+        // Renamed original showRecentMessages to avoid conflict and specify group
+        async function showRecentMessagesForGroup(groupSessionId) { 
             try {
-                addDebugMessage(`正在获取群 ${selectedGroupId} 的最近消息...`);
+                addDebugMessage(`正在获取群 ${groupSessionId} 的最近消息...`);
                 
-                const response = await fetch(`/api/recent-messages/${selectedGroupId}`);
+                const response = await fetch(`/api/recent-messages/${groupSessionId}`);
                 const data = await response.json();
                 
                 if (data.status === 'success') {
@@ -919,29 +936,16 @@
         
         // 更新过滤状态显示
         function updateFilterStatus() {
-            if (!filterEnabled) {
-                if (selectedGroupId) {
-                    const selectedGroup = groupsData.find(g => g.id === selectedGroupId);
-                    if (selectedGroup) {
-                        groupFilterStatus.textContent = `已选择群 ${selectedGroup.group_id}，点击"监听该群"按钮开始监听`;
-                        groupFilterStatus.style.color = 'var(--muted-color)';
-                    } else {
-                        groupFilterStatus.textContent = '当前未监听任何群聊';
-                        groupFilterStatus.style.color = 'var(--muted-color)';
-                    }
-                } else {
-                    groupFilterStatus.textContent = '当前未监听任何群聊';
-                    groupFilterStatus.style.color = 'var(--muted-color)';
-                }
-            } else if (selectedGroupId) {
-                const selectedGroup = groupsData.find(g => g.id === selectedGroupId);
-                if (selectedGroup) {
-                    groupFilterStatus.textContent = `正在监听群 ${selectedGroup.group_id} 的消息`;
-                    groupFilterStatus.style.color = 'var(--primary-color)';
-                }
+            if (listenedSessionIds.size === 0) {
+                groupFilterStatus.textContent = '当前未监听任何群聊';
+                groupFilterStatus.style.color = 'var(--muted-color)';
             } else {
-                groupFilterStatus.textContent = '警告：已启用监听但未选择任何群！';
-                groupFilterStatus.style.color = 'var(--danger-color)';
+                const listenedNames = Array.from(listenedSessionIds).map(sessionId => {
+                    const group = groupsData.find(g => g.id === sessionId);
+                    return group ? (group.alias || `群${group.group_id}`) : `未知群(${sessionId})`;
+                }).join(', ');
+                groupFilterStatus.textContent = `正在监听: ${listenedNames}`;
+                groupFilterStatus.style.color = 'var(--primary-color)';
             }
         }
         
@@ -964,36 +968,64 @@
         }
         
         // 启用监听
-        enableFilterButton.addEventListener('click', () => {
-            if (!selectedGroupId) {
-                alert('请先选择一个群聊');
+        applySelectedGroupsButton.addEventListener('click', () => {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                addDebugMessage('WebSocket未连接，无法应用群组监听');
+                alert('WebSocket未连接，请先连接。');
                 return;
             }
-            
-            filterEnabled = true;
-            sendFilterSettings();
-            
-            // 同时更新预览框的过滤设置
+            const groupsToListen = Array.from(listenedSessionIds);
+            socket.send(JSON.stringify({
+                type: 'command',
+                action: 'set_groups',
+                filter_enabled: groupsToListen.length > 0, // Enable filter if any group is selected
+                groups: groupsToListen // Send array of session_ids
+            }));
+            addDebugMessage(`发送监听群组命令: ${JSON.stringify(groupsToListen)}`);
+            // The backend will respond, and the UI might update based on that response or implicitly here
+            renderGroupList(); // Re-render to reflect "listening" state potentially, or wait for command response
+            updateFilterStatus();
+
+            // Update preview frame
             if (isPreviewReady && previewFrame.contentWindow) {
-                const selectedGroup = groupsData.find(g => g.id === selectedGroupId);
-                if (selectedGroup) {
-                    previewFrame.contentWindow.postMessage({
-                        action: 'setFilter',
-                        enabled: true,
-                        groupId: selectedGroup.group_id
-                    }, '*');
-                    addDebugMessage(`已向预览框发送过滤设置: 启用=true, 群ID=${selectedGroup.group_id}`);
-                }
+                const actualGroupIdsToFilter = groupsToListen.map(sid => {
+                    const group = groupsData.find(g => g.id === sid);
+                    return group ? group.group_id : null;
+                }).filter(gid => gid !== null);
+
+                previewFrame.contentWindow.postMessage({
+                    action: 'setFilter',
+                    enabled: actualGroupIdsToFilter.length > 0,
+                    // groupId: actualGroupIdsToFilter.length > 0 ? actualGroupIdsToFilter[0] : null, // Old single group logic
+                    allowed_groups: actualGroupIdsToFilter // Send array of actual group_ids
+                }, '*');
+                addDebugMessage(`已向预览框发送过滤设置: 启用=${actualGroupIdsToFilter.length > 0}, 群列表=${JSON.stringify(actualGroupIdsToFilter)}`);
             }
         });
-        
-        // 显示最近消息
-        showRecentButton.addEventListener('click', () => {
-            if (!selectedGroupId) {
-                alert('请选择有效的群聊');
-                return;
+
+        clearAllListeningButton.addEventListener('click', () => {
+            listenedSessionIds.clear();
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({
+                    type: 'command',
+                    action: 'set_groups',
+                    filter_enabled: false,
+                    groups: [] 
+                }));
+                addDebugMessage('发送命令: 清除所有群组监听');
             }
-            showRecentMessages();
+            renderGroupList(); // Update UI to uncheck all
+            updateFilterStatus();
+
+            // Update preview frame to listen to nothing (or all, depending on danmaku.html default)
+            if (isPreviewReady && previewFrame.contentWindow) {
+                previewFrame.contentWindow.postMessage({
+                    action: 'setFilter',
+                    enabled: false,
+                    allowed_groups: [] 
+                }, '*');
+                 addDebugMessage('已向预览框发送清除过滤设置');
+            }
         });
         
         // 刷新群列表
@@ -1134,6 +1166,11 @@
                     // 处理不同类型的消息
                     if (data.type === 'connection') {
                         addDebugMessage(`服务器消息: ${data.message}`);
+                        // Initial settings might include listened groups for this connection if session is restored by backend
+                        if (data.settings && data.settings.listened_groups_this_connection) {
+                            listenedSessionIds = new Set(data.settings.listened_groups_this_connection);
+                            renderGroupList(); // Reflect this state
+                        }
                     } else if (data.type === 'stats') {
                         // 更新统计信息
                         activeConnectionsEl.textContent = data.connections || 0;
@@ -1179,6 +1216,17 @@
                     } else if (data.type === 'setting_update') { // 处理设置更新广播
                         if (data.key === 'danmaku_speed') {
                             updateSpeedUI(data.value); // 更新速度滑块
+                        }
+                    } else if (data.type === 'last_focused_group_hint') {
+                        lastFocusedGroupIdHint = data.group_id;
+                        addDebugMessage(`收到后端上次聚焦群组提示: ${lastFocusedGroupIdHint}`);
+                        // If groups are already loaded, try to pre-select
+                        if (groupsData.length > 0 && listenedSessionIds.size === 0) {
+                             const hintGroup = groupsData.find(g => g.group_id === lastFocusedGroupIdHint);
+                             if (hintGroup) {
+                                 listenedSessionIds.add(hintGroup.id);
+                                 renderGroupList(); 
+                             }
                         }
                     }
                 } catch (error) {

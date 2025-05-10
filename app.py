@@ -93,7 +93,8 @@ connection_filters = {}
 session_to_group_map: Dict[str, str] = {}
 
 # 全局活跃群组ID
-active_group_id: Optional[str] = None
+# active_group_id: Optional[str] = None # This will now be more of a UI hint, not a global filter.
+# Still loaded and saved for UI persistence if desired, but not used for filtering new connections.
 
 # 群组别名配置
 group_aliases: Dict[str, str] = {}
@@ -116,9 +117,9 @@ def load_config():
                 config = json.load(f)
                 group_aliases = config.get('group_aliases', {})
                 favorite_groups = config.get('favorite_groups', [])
-                active_group_id = config.get('active_group_id')
+                active_group_id = config.get('active_group_id') # Keep loading for UI hint
                 danmaku_speed = config.get('danmaku_speed', 10)
-                print(f"已加载配置: {len(group_aliases)}个群别名, {len(favorite_groups)}个常用群组, 弹幕速度={danmaku_speed}s")
+                print(f"已加载配置: {len(group_aliases)}个群别名, {len(favorite_groups)}个常用群组, 弹幕速度={danmaku_speed}s, (UI提示)最后活跃群组={active_group_id}")
         else:
             print("配置文件不存在，使用默认设置")
     except Exception as e:
@@ -126,12 +127,12 @@ def load_config():
 
 # 保存配置
 def save_config():
-    global danmaku_speed
+    global danmaku_speed, active_group_id # ensure active_group_id can be saved for UI hint
     try:
         config = {
             'group_aliases': group_aliases,
             'favorite_groups': favorite_groups,
-            'active_group_id': active_group_id,
+            'active_group_id': active_group_id, # Keep saving for UI hint
             'danmaku_speed': danmaku_speed
         }
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -168,14 +169,14 @@ async def broadcast_to_all(message: str):
             print(f"广播消息失败: {e}")
 
 # 广播活跃群组变更消息
-async def broadcast_group_change(group_id: str):
-    """广播群组变更消息到所有连接"""
-    message = {
-        "type": "active_group",
-        "group_id": group_id
-    }
-    await broadcast_to_all(json.dumps(message))
-    print(f"已广播群组变更消息: {group_id}")
+# async def broadcast_group_change(group_id: str): # This function will be removed or significantly changed
+#     """广播群组变更消息到所有连接"""
+#     message = {
+#         "type": "active_group",
+#         "group_id": group_id
+#     }
+#     await broadcast_to_all(json.dumps(message))
+#     print(f"已广播群组变更消息: {group_id}")
 
 # 获取群聊ID
 async def get_group_id_from_session_id(session_id: str) -> Optional[str]:
@@ -206,42 +207,36 @@ async def get_group_id_from_session_id(session_id: str) -> Optional[str]:
 # 处理WebSocket消息
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global active_group_id, danmaku_speed
+    global active_group_id, danmaku_speed # Declare both as global at the top
+
+    initial_ui_hint_group_id = active_group_id 
+    current_danmaku_speed = danmaku_speed # Read global danmaku_speed for initial settings
+
     await websocket.accept()
     logging.info("connection open")
     
-    # 存储每个连接的过滤设置
     connection_filter = {
         "enabled": False,
         "allowed_groups": []
     }
     
-    # 如果有全局活跃群组，则自动设置过滤
-    if active_group_id:
-        connection_filter["enabled"] = False  # 默认不启用过滤
-        connection_filter["allowed_groups"] = [active_group_id]
-        print(f"新连接自动设置过滤: 启用=False, 群ID={active_group_id}")
-    
     try:
         active_connections.append((websocket, connection_filter))
         
-        # 发送初始连接成功消息，包含当前设置
         await websocket.send_text(json.dumps({
             "type": "connection",
             "message": "连接成功",
             "settings": {
-                "danmaku_speed": danmaku_speed
+                "danmaku_speed": current_danmaku_speed # Use the locally captured speed
             }
         }))
         
-        # 如果有全局活跃群组，发送群组信息
-        if active_group_id:
+        if initial_ui_hint_group_id:
             await websocket.send_text(json.dumps({
-                "type": "active_group",
-                "group_id": active_group_id
+                "type": "last_focused_group_hint",
+                "group_id": initial_ui_hint_group_id
             }))
         
-        # 发送当前连接数量
         await broadcast_stats()
         
         while True:
@@ -250,59 +245,65 @@ async def websocket_endpoint(websocket: WebSocket):
                 message = json.loads(data)
                 
                 if message["type"] == "command":
-                    if message["action"] == "set_groups":
-                        # 处理过滤设置命令
-                        filter_enabled = message.get("filter_enabled", False)
-                        session_ids = message.get("groups", [])
+                    action = message.get("action")
+                    if action == "set_groups":
+                        filter_enabled_req = message.get("filter_enabled", False)
+                        session_ids_req = message.get("groups", [])
                         
-                        print(f"收到过滤设置: 启用={filter_enabled}, 群列表={session_ids}")
+                        print(f"收到 set_groups 命令: 启用={filter_enabled_req}, 群列表(session_ids)={session_ids_req}")
                         
-                        # 将session_id映射到group_id
-                        group_ids = []
-                        for session_id in session_ids:
-                            group_id = await get_group_id_from_session_id(session_id)
-                            if group_id and group_id not in group_ids:  # 确保不重复添加相同的群ID
-                                group_ids.append(group_id)
+                        # 将session_id映射到实际的group_id
+                        target_group_ids = []
+                        for session_id_val in session_ids_req:
+                            group_id_val = await get_group_id_from_session_id(session_id_val)
+                            if group_id_val and group_id_val not in target_group_ids:
+                                target_group_ids.append(group_id_val)
                         
-                        connection_filter["enabled"] = filter_enabled
-                        connection_filter["allowed_groups"] = group_ids
+                        # 更新所有活动连接的过滤器设置
+                        # 这是关键：确保所有连接（包括主弹幕页和控制面板预览）都采用相同的过滤规则
+                        updated_connection_count = 0
+                        for conn, conn_filter_ref in active_connections: # conn_filter_ref 是对字典的可变引用
+                            conn_filter_ref["enabled"] = filter_enabled_req
+                            conn_filter_ref["allowed_groups"] = target_group_ids # 使用实际的group_id列表
+                            updated_connection_count += 1
                         
-                        print(f"设置过滤: enabled={connection_filter['enabled']}, session_ids={session_ids}, group_ids={group_ids}")
+                        logging.info(f"已为 {updated_connection_count} 个活动连接更新过滤器: enabled={filter_enabled_req}, allowed_group_ids={target_group_ids}")
                         
-                        # 发送确认消息
+                        # 向发起命令的客户端发送确认
                         await websocket.send_text(json.dumps({
-                            "type": "command_response",
-                            "action": "set_groups",
-                            "status": "success",
-                            "message": f"群聊监听已{'启用' if filter_enabled else '禁用'}, 已选择 {len(session_ids)} 个群",
-                            "debug_info": {
-                                "session_ids": session_ids,
-                                "group_ids": group_ids
-                            }
+                            "type": "command_response", "action": "set_groups", "status": "success",
+                            "message": f"群聊监听已全局{'启用' if filter_enabled_req else '禁用'}, 已选择 {len(target_group_ids)} 个群",
+                            "listened_groups": target_group_ids
                         }))
-                    elif message["action"] == "set_active_group":
-                        # 设置全局活跃群组
-                        session_id = message.get("group_id")
-                        
-                        if session_id:
-                            group_id = await get_group_id_from_session_id(session_id)
-                            if group_id:
-                                active_group_id = group_id
-                                print(f"设置全局活跃群组: {active_group_id}")
+
+                        # 广播过滤器更新给所有连接的客户端 (主要供客户端JS更新其本地状态，如danmaku.html)
+                        # 虽然后端过滤器已经为所有连接更新了，但这个广播对客户端侧的同步仍然有用。
+                        filter_update_payload = {
+                            "type": "broadcast_filter_update",
+                            "filter_enabled": filter_enabled_req,
+                            "allowed_groups": target_group_ids 
+                        }
+                        await broadcast_to_all(json.dumps(filter_update_payload))
+                        logging.info(f"已广播客户端过滤器更新通知: enabled={filter_enabled_req}, groups={target_group_ids}")
+                    elif action == "set_active_group":
+                        session_id_param = message.get("group_id")
+                        if session_id_param:
+                            target_group_id_val = await get_group_id_from_session_id(session_id_param)
+                            if target_group_id_val:
+                                connection_filter["enabled"] = True
+                                connection_filter["allowed_groups"] = [target_group_id_val]
+                                print(f"Connection {websocket.client} listening to group: {target_group_id_val}")
+                                
+                                # active_group_id is already global due to declaration at function top
+                                active_group_id = target_group_id_val # Modifies the global active_group_id
                                 save_config()
-                                
-                                # 设置当前连接的过滤
-                                connection_filter["enabled"] = False  # 默认不启用过滤
-                                connection_filter["allowed_groups"] = [active_group_id]
-                                
-                                # 广播群组变更消息
-                                await broadcast_group_change(active_group_id)
-                                
+
                                 await websocket.send_text(json.dumps({
                                     "type": "command_response",
                                     "action": "set_active_group",
                                     "status": "success",
-                                    "message": f"已设置活跃群组: {active_group_id}"
+                                    "message": f"您现在只监听群组: {target_group_id_val}",
+                                    "listened_groups": [target_group_id_val]
                                 }))
                             else:
                                 await websocket.send_text(json.dumps({
@@ -312,21 +313,35 @@ async def websocket_endpoint(websocket: WebSocket):
                                     "message": "无法获取群组ID"
                                 }))
                         else:
-                            active_group_id = None
-                            save_config()
+                            # Clearing active group for this connection
+                            connection_filter["enabled"] = False
+                            connection_filter["allowed_groups"] = []
+                            # No global active_group_id change when one client clears filter
                             await websocket.send_text(json.dumps({
-                                "type": "command_response",
-                                "action": "set_active_group",
-                                "status": "success",
-                                "message": "已清除活跃群组"
+                                    "type": "command_response",
+                                    "action": "set_active_group",
+                                    "status": "success",
+                                    "message": "已清除此连接的群组监听",
+                                    "listened_groups": []
                             }))
-                    elif message["action"] == "get_active_group":
-                        # 获取当前活跃群组
+                            
+                    elif action == "get_active_group":
+                        response_group_id_to_send = None
+                        # active_group_id is already global, so this reads the global value
+                        current_global_hint_for_get = active_group_id 
+                        
+                        if connection_filter["enabled"] and connection_filter["allowed_groups"]:
+                            response_group_id_to_send = connection_filter["allowed_groups"][0]
+                        else:
+                            response_group_id_to_send = current_global_hint_for_get
+                        
                         await websocket.send_text(json.dumps({
-                            "type": "active_group",
-                            "group_id": active_group_id
+                            "type": "active_group_info",
+                            "group_id": response_group_id_to_send,
+                            "is_filtering_this_connection": connection_filter["enabled"],
+                            "listened_groups_this_connection": connection_filter["allowed_groups"]
                         }))
-                    elif message["action"] == "set_danmaku_speed":
+                    elif action == "set_danmaku_speed":
                         new_speed = message.get("speed")
                         try:
                             speed_val = int(new_speed)
@@ -349,32 +364,38 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "status": "error",
                                 "message": "无效的速度值，请输入5到60之间的整数"
                             }))
-                logging.debug(f"WebSocket loop processed message: {data[:50]}...") # 添加循环日志
+                logging.debug(f"WebSocket loop processed message: {data[:50]}...")
             except json.JSONDecodeError:
-                logging.warning("Received invalid JSON message") # 用 warning
-            except Exception as e:
-                logging.error(f"Error processing WebSocket message: {str(e)}", exc_info=True) # 记录完整错误
-                
+                logging.warning("Received invalid JSON message")
+            except WebSocketDisconnect:
+                logging.info("WS Disconnected in receive loop, breaking.")
+                break
+            except RuntimeError as re:
+                if "Cannot call \"receive\" once a disconnect message has been received" in str(re):
+                    logging.warning(f"RuntimeError indicating disconnect in loop, breaking: {re}")
+                    break
+                logging.error(f"Other RuntimeError in loop, breaking: {re}", exc_info=True)
+                break 
+            except Exception as e_loop:
+                logging.error(f"Generic error in receive loop, breaking: {e_loop}", exc_info=True)
+                break
+
     except WebSocketDisconnect as e:
-        # 尝试记录关闭代码和原因
-        logging.info(f"WebSocket connection closed. Code: {e.code}, Reason: {e.reason}")
-        active_connections.remove((websocket, connection_filter))
-        await broadcast_stats()
-        logging.info("connection closed")
+        logging.info(f"WebSocket connection closed (outer catch). Code: {e.code}, Reason: {e.reason}")
     except Exception as e:
-        # 记录更详细的 WebSocket 错误
-        logging.error(f"Unhandled WebSocket error: {str(e)}", exc_info=True)
-        if (websocket, connection_filter) in active_connections:
-            active_connections.remove((websocket, connection_filter))
-            await broadcast_stats()
-        logging.info("connection closed")
+        logging.error(f"Unhandled WebSocket error (outer catch): {str(e)}", exc_info=True)
     finally:
-         # 确保连接总是被移除
         if (websocket, connection_filter) in active_connections:
             active_connections.remove((websocket, connection_filter))
-            logging.info(f"Connection removed in finally block. Current connections: {len(active_connections)}")
-            await broadcast_stats() # 确保广播更新
-        logging.info("Exiting websocket_endpoint handler.") # 确认函数结束
+            logging.info(f"Connection removed in finally. Current connections: {len(active_connections)}")
+            # Broadcast stats only if list was modified and is not empty, or handle error if broadcast fails
+            try:
+                await broadcast_stats()
+            except Exception as broadcast_exc:
+                logging.error(f"Error broadcasting stats in finally: {broadcast_exc}")
+        else:
+            logging.info("Connection already removed or was never fully added.")
+        logging.info("Exiting websocket_endpoint handler.")
 
 # 主页
 @app.get("/", response_class=HTMLResponse)
@@ -422,8 +443,8 @@ async def get_groups():
             
             return {
                 "status": "success",
-                "groups": group_list,
-                "active_group_id": active_group_id
+                "groups": group_list
+                # "active_group_id": active_group_id # Removed global active_group_id from this API response
             }
     except Exception as e:
         print(f"获取群聊列表出错: {e}")
@@ -639,31 +660,39 @@ async def check_for_new_messages():
                         # 调试打印
                         print(f"处理新消息: 群={group_id}, 用户={session.id1}, 时间={message_time_utc} (UTC) / {message_time_local} (本地), 内容={str(content)[:20]}...")
                         
-                        # 广播消息到所有活跃的WebSocket连接
                         sent_count = 0
                         for connection, filter_settings in active_connections:
                             try:
-                                # 检查过滤设置
                                 print(f"连接过滤设置: enabled={filter_settings['enabled']}, allowed_groups={filter_settings['allowed_groups']}, 当前消息群ID={group_id}")
                                 
-                                # 如果启用了过滤且当前群ID不在允许列表中，则跳过
-                                if filter_settings['enabled'] and filter_settings['allowed_groups'] and group_id not in filter_settings['allowed_groups']:
-                                    print(f"消息被过滤: 群ID {group_id} 不在允许列表中 {filter_settings['allowed_groups']}")
-                                    continue
-                                
-                                # 发送消息
-                                danmaku_message = {
-                                    "type": "danmaku",
-                                    "group_id": group_id,
-                                    "user_id": session.id1,
-                                    "time": message_time_utc.isoformat(),
-                                    "content": content,
-                                    "message_id": message.message_id
-                                }
-                                
-                                await connection.send_text(json.dumps(danmaku_message))
-                                sent_count += 1
-                                print(f"发送弹幕成功: 群={group_id}, 内容={str(content)[:20]}...")
+                                # 修正的过滤逻辑：
+                                should_send = False
+                                if filter_settings['enabled']:
+                                    if filter_settings['allowed_groups'] and group_id in filter_settings['allowed_groups']:
+                                        should_send = True
+                                    # If enabled but allowed_groups is empty, it means listen to nothing specific from this filter type.
+                                    # However, our UI for "select groups" implies enabled + empty = listen to none of selected.
+                                    # The case of enabled=true and allowed_groups=[] should ideally not happen if UI sends groups when enabling.
+                                    # Let's assume if enabled=true, allowed_groups must be non-empty for a match.
+                                else: # filter_settings['enabled'] is False
+                                    # If filter is disabled by the client (e.g., "取消全部监听"), 
+                                    # then this connection should not receive any group-specific messages through this polling mechanism.
+                                    # The previous logic was to send if enabled=false, which meant send all. This is now corrected.
+                                    pass # should_send remains False
+
+                                if should_send:
+                                    danmaku_message = {
+                                        "type": "danmaku",
+                                        "group_id": group_id,
+                                        "user_id": session.id1,
+                                        "time": message_time_utc.isoformat(),
+                                        "content": content,
+                                        "message_id": message.message_id
+                                    }
+                                    
+                                    await connection.send_text(json.dumps(danmaku_message))
+                                    sent_count += 1
+                                    print(f"发送弹幕成功: 群={group_id}, 内容={str(content)[:20]}...")
                             except Exception as e:
                                 print(f"发送消息时出错: {str(e)}")
                         
@@ -689,7 +718,7 @@ async def send_stats_periodically():
             await broadcast_stats()
         except Exception as e:
             print(f"发送统计信息时出错: {str(e)}")
-        await asyncio.sleep(10)
+        await asyncio.sleep(10) # Keep this at 10 seconds as per existing code
 
 @app.on_event("startup")
 async def startup_event():
