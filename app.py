@@ -592,8 +592,13 @@ async def check_for_new_messages():
                 initial_check_time = datetime.utcnow() - timedelta(hours=1)
             else:
                 print(f"数据库最新消息时间: {latest_time} (UTC时间)")
-                # 使用数据库中最新消息的时间作为起始检查时间
-                initial_check_time = latest_time
+                # 重要修改：检查数据库时间是否在未来
+                if latest_time > datetime.utcnow():
+                    print("警告：数据库时间在未来！使用当前时间回退24小时作为初始检查时间")
+                    initial_check_time = datetime.utcnow() - timedelta(hours=24)
+                else:
+                    # 使用数据库中最新消息的时间作为起始检查时间
+                    initial_check_time = latest_time
     except Exception as e:
         print(f"获取最新消息时间出错: {e}")
         # 如果查询出错，使用当前时间
@@ -620,6 +625,16 @@ async def check_for_new_messages():
                 
                 if db_latest_time:
                     print(f"数据库最新消息时间: {db_latest_time} (UTC时间)")
+                    
+                    # 重要修改：如果数据库时间超前于当前时间，重置查询时间
+                    if db_latest_time > utc_now:
+                        print(f"警告：数据库时间 {db_latest_time} 超出当前UTC时间 {utc_now}！")
+                        # 如果超过48小时，可能是时区或系统时间问题
+                        if (db_latest_time - utc_now) > timedelta(hours=48):
+                            print("数据库时间异常！可能是时区设置或系统时间错误")
+                            # 尝试降低查询时间阈值
+                            last_check_time = utc_now - timedelta(minutes=5)
+                            print(f"已将查询时间阈值降低为 {last_check_time}")
                 
                 # 查询新消息
                 query = select(MessageRecord, SessionModel).join(
@@ -655,7 +670,7 @@ async def check_for_new_messages():
                                 parts = content.split(":", 1)
                                 # Avoid splitting time format like "17:14:03" if it's the whole message
                                 if not parts[0].isdigit() or (len(parts) > 1 and not parts[1].isdigit()):
-                                     content = parts[1].lstrip() # Use lstrip to remove leading space if any
+                                    content = parts[1].lstrip() # Use lstrip to remove leading space if any
 
                         # 调试打印
                         print(f"处理新消息: 群={group_id}, 用户={session.id1}, 时间={message_time_utc} (UTC) / {message_time_local} (本地), 内容={str(content)[:20]}...")
@@ -675,10 +690,9 @@ async def check_for_new_messages():
                                     # The case of enabled=true and allowed_groups=[] should ideally not happen if UI sends groups when enabling.
                                     # Let's assume if enabled=true, allowed_groups must be non-empty for a match.
                                 else: # filter_settings['enabled'] is False
-                                    # If filter is disabled by the client (e.g., "取消全部监听"), 
-                                    # then this connection should not receive any group-specific messages through this polling mechanism.
-                                    # The previous logic was to send if enabled=false, which meant send all. This is now corrected.
-                                    pass # should_send remains False
+                                    # 修复：如果过滤器未启用，接收所有消息（原始行为）
+                                    should_send = True
+                                    print(f"过滤器未启用，将发送所有消息（群ID = {group_id}）")
 
                                 if should_send:
                                     danmaku_message = {
@@ -700,9 +714,21 @@ async def check_for_new_messages():
                     
                     # 更新最后检查时间（加上1毫秒避免重复获取同一条消息）
                     # 使用数据库中的最新消息时间，而非本地时间
-                    if db_latest_time:
+                    if db_latest_time and db_latest_time <= utc_now:
                         last_check_time = db_latest_time + timedelta(milliseconds=1)
-                        print(f"更新最后检查时间为: {last_check_time} (UTC时间)")
+                    else:
+                        # 如果数据库时间异常，使用消息列表中的最后一条消息时间
+                        last_message_time = new_messages[-1][0].time
+                        last_check_time = last_message_time + timedelta(milliseconds=1)
+                    
+                    print(f"更新最后检查时间为: {last_check_time} (UTC时间)")
+                else:
+                    # 重要修改：如果查询了一段时间都没有消息，间隔性重置查询时间，避免永远等待未来
+                    now = datetime.utcnow()
+                    # 如果上次检查时间超过当前时间5分钟，可能是检测时间阻塞在未来
+                    if last_check_time > now + timedelta(minutes=5):
+                        print(f"警告：检查时间 {last_check_time} 异常超前，重置为当前时间前1小时")
+                        last_check_time = now - timedelta(hours=1)
         except Exception as e:
             print(f"检查新消息时出错: {str(e)}")
             import traceback
