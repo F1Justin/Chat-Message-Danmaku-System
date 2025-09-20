@@ -666,7 +666,7 @@
             };
             
             if (previewFrame.contentWindow) {
-                previewFrame.contentWindow.postMessage({action: 'applySettings', settings}, '*');
+                previewFrame.contentWindow.postMessage({action: 'updateSettings', settings}, '*');
                 addDebugMessage(`已应用设置: ${JSON.stringify(settings)}`);
             }
             
@@ -1032,19 +1032,31 @@
         refreshGroupsButton.addEventListener('click', loadGroups);
         
         // 复制链接按钮
-        document.getElementById('copy-url').addEventListener('click', () => {
+        document.getElementById('copy-url').addEventListener('click', async () => {
             const urlInput = document.getElementById('danmaku-url');
-            urlInput.select();
-            document.execCommand('copy');
-            
-            // 显示复制成功提示
+            const text = urlInput.value;
+            let success = false;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                try {
+                    await navigator.clipboard.writeText(text);
+                    success = true;
+                } catch (e) {
+                    success = false;
+                }
+            }
+            if (!success) {
+                // 回退方案
+                urlInput.select();
+                success = document.execCommand('copy');
+            }
+            // 显示复制提示
             const copyStatus = document.getElementById('copy-status');
             copyStatus.style.display = 'block';
+            copyStatus.textContent = success ? '链接已复制到剪贴板' : '复制失败，请手动复制';
             setTimeout(() => {
                 copyStatus.style.display = 'none';
             }, 2000);
-            
-            addDebugMessage('弹幕链接已复制到剪贴板');
+            addDebugMessage(success ? '弹幕链接已复制到剪贴板' : '复制失败');
         });
         
         // 添加调试信息
@@ -1170,6 +1182,9 @@
                         if (data.settings && data.settings.listened_groups_this_connection) {
                             listenedSessionIds = new Set(data.settings.listened_groups_this_connection);
                             renderGroupList(); // Reflect this state
+                        }
+                        if (data.settings && typeof data.settings.danmaku_speed === 'number') {
+                            updateSpeedUI(data.settings.danmaku_speed);
                         }
                     } else if (data.type === 'stats') {
                         // 更新统计信息

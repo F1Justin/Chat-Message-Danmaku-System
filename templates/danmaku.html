@@ -77,7 +77,8 @@
         const config = {
             maxDanmaku: 100,
             fontSize: 50,
-            animationMethod: 'css',
+            animationMethod: 'transform',
+            danmakuSpeedSeconds: 10,
             showDebug: false
         };
         
@@ -98,7 +99,7 @@
             debugPanel = document.getElementById('debug-info');
             
             // 设置初始弹幕速度（默认值）
-            setDanmakuSpeed(10); // 设置默认值
+            setDanmakuSpeed(config.danmakuSpeedSeconds); // 设置默认值
             
             // 检查URL参数
             const urlParams = new URLSearchParams(window.location.search);
@@ -129,7 +130,7 @@
                         updateSettings(data.settings);
                     } else if (data.action === 'setFilter') {
                         filterSettings.enabled = data.enabled;
-                        filterSettings.allowed_groups = new Set(data.allowed_groups || []); // Ensure it's a Set
+                        filterSettings.allowed_groups = new Set((data.allowed_groups || []).map(String));
                         addDebugMessage(`过滤设置已更新: 启用=${filterSettings.enabled}, 允许群组=${JSON.stringify(Array.from(filterSettings.allowed_groups))}`);
                     } else if (data.action === 'setting_update') {
                         if (data.key === 'danmaku_speed') {
@@ -172,6 +173,9 @@
                     } else if (data.type === 'setting_update') {
                         if (data.key === 'danmaku_speed') {
                             setDanmakuSpeed(data.value);
+                        } else if (data.settings && typeof data.settings === 'object') {
+                            // 批量设置更新
+                            updateSettings(data.settings);
                         }
                     } else if (data.type === 'broadcast_filter_update') {
                         addDebugMessage(`过滤器更新: enabled=${data.filter_enabled}, 允许群组=${JSON.stringify(data.allowed_groups)}`);
@@ -179,7 +183,7 @@
                         const oldAllowedGroupsSize = filterSettings.allowed_groups.size;
 
                         filterSettings.enabled = data.filter_enabled;
-                        filterSettings.allowed_groups = new Set(data.allowed_groups || []);
+                        filterSettings.allowed_groups = new Set((data.allowed_groups || []).map(String));
 
                         // 如果过滤器从"启用"变为"禁用且无允许群组"（即取消全部监听）
                         // 或者从"启用且有群组"变为"启用但允许群组为空"
@@ -222,6 +226,7 @@
         function setDanmakuSpeed(speed) {
             if (typeof speed === 'number' && speed >= 5 && speed <= 60) {
                 document.documentElement.style.setProperty('--danmaku-duration', speed + 's');
+                config.danmakuSpeedSeconds = speed;
                 addDebugMessage(`弹幕速度已设置为: ${speed} 秒`);
             } else {
                 addDebugMessage(`无效的速度值: ${speed}`);
@@ -237,8 +242,8 @@
             }
             
             // 检查过滤设置
-            if (filterSettings.enabled && filterSettings.allowed_groups.size > 0) {
-                const messageGroupId = data.group_id;
+            if (filterSettings.enabled) {
+                const messageGroupId = String(data.group_id);
                 if (!filterSettings.allowed_groups.has(messageGroupId)) {
                     addDebugMessage(`过滤消息: 群ID=${messageGroupId}, 不在允许列表 ${JSON.stringify(Array.from(filterSettings.allowed_groups))} 中`);
                     return;
@@ -269,8 +274,8 @@
             let displayedCount = 0;
             messages.forEach(message => {
                 // 检查过滤设置
-                if (filterSettings.enabled && filterSettings.allowed_groups.size > 0) {
-                    if (!filterSettings.allowed_groups.has(message.group_id)) {
+                if (filterSettings.enabled) {
+                    if (!filterSettings.allowed_groups.has(String(message.group_id))) {
                         return; // Skip if not in allowed groups
                     }
                 }
@@ -404,18 +409,48 @@
                     }
                 }, duration);
             } else {
-                // 普通弹幕使用从右到左的动画 - 由 CSS 控制
-                danmaku.style.left = '0';
-                danmaku.style.right = 'auto';
+                if (config.animationMethod === 'transform') {
+                    // 使用 CSS transform 动画
+                    danmaku.style.left = '0';
+                    danmaku.style.right = 'auto';
+                    danmaku.style.animation = '';
 
-                // 监听动画结束事件，移除弹幕
-                danmaku.addEventListener('animationend', () => {
-                    if (danmakuContainer.contains(danmaku)) {
-                        danmakuContainer.removeChild(danmaku);
-                        activeDanmakuCount--;
-                        updateDanmakuCount();
+                    // 监听动画结束事件，移除弹幕
+                    danmaku.addEventListener('animationend', () => {
+                        if (danmakuContainer.contains(danmaku)) {
+                            danmakuContainer.removeChild(danmaku);
+                            activeDanmakuCount--;
+                            updateDanmakuCount();
+                        }
+                    });
+                } else {
+                    // 使用 left 属性与 requestAnimationFrame 实现动画
+                    danmaku.style.animation = 'none';
+                    const containerWidth = danmakuContainer.clientWidth;
+                    const startPosition = containerWidth;
+                    const endPosition = -danmakuWidth;
+                    let startTime = null;
+                    const totalDuration = (config.danmakuSpeedSeconds || 10) * 1000;
+
+                    function step(timestamp) {
+                        if (!startTime) startTime = timestamp;
+                        const elapsed = timestamp - startTime;
+                        const progress = Math.min(1, elapsed / totalDuration);
+                        const current = startPosition + (endPosition - startPosition) * progress;
+                        danmaku.style.left = current + 'px';
+                        danmaku.style.right = 'auto';
+                        if (progress < 1 && danmakuContainer.contains(danmaku)) {
+                            requestAnimationFrame(step);
+                        } else {
+                            if (danmakuContainer.contains(danmaku)) {
+                                danmakuContainer.removeChild(danmaku);
+                                activeDanmakuCount--;
+                                updateDanmakuCount();
+                            }
+                        }
                     }
-                });
+                    requestAnimationFrame(step);
+                }
             }
         }
         
@@ -490,7 +525,10 @@
         
         // 更新弹幕计数显示
         function updateDanmakuCount() {
-            debugPanel.textContent = activeDanmakuCount;
+            const countEl = document.getElementById('danmaku-count');
+            if (countEl) {
+                countEl.textContent = activeDanmakuCount;
+            }
             
             // 向父窗口报告弹幕数量（用于控制台显示）
             if (window.parent && window.parent !== window) {

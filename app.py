@@ -20,6 +20,10 @@ import time
 # 加载环境变量
 load_dotenv()
 
+# 日志配置：默认 INFO，可通过环境变量 LOG_LEVEL 调整（DEBUG/INFO/WARNING/ERROR）
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
+
 # 数据库配置
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
@@ -83,6 +87,16 @@ app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# 仅允许本机访问
+ALLOWED_LOCALHOSTS = {"127.0.0.1", "::1", "localhost"}
+
+@app.middleware("http")
+async def restrict_localhost_middleware(request: Request, call_next):
+    client_host = request.client.host if request.client else None
+    if client_host not in ALLOWED_LOCALHOSTS:
+        return JSONResponse({"detail": "Forbidden"}, status_code=403)
+    return await call_next(request)
+
 # 存储活跃的WebSocket连接，及其关联的群聊过滤
 active_connections: List[Tuple[WebSocket, Dict[str, Any]]] = []
 
@@ -91,6 +105,10 @@ connection_filters = {}
 
 # 存储session_id到group_id的映射缓存
 session_to_group_map: Dict[str, str] = {}
+
+# 全局过滤状态（用于新连接继承当前选择的群组过滤）
+global_filter_enabled: bool = False
+global_allowed_groups: List[str] = []
 
 # 全局活跃群组ID
 # active_group_id: Optional[str] = None # This will now be more of a UI hint, not a global filter.
@@ -119,11 +137,11 @@ def load_config():
                 favorite_groups = config.get('favorite_groups', [])
                 active_group_id = config.get('active_group_id') # Keep loading for UI hint
                 danmaku_speed = config.get('danmaku_speed', 10)
-                print(f"已加载配置: {len(group_aliases)}个群别名, {len(favorite_groups)}个常用群组, 弹幕速度={danmaku_speed}s, (UI提示)最后活跃群组={active_group_id}")
+                logging.info(f"已加载配置: 别名={len(group_aliases)} 常用群={len(favorite_groups)} 速度={danmaku_speed}s 提示活跃群={active_group_id}")
         else:
-            print("配置文件不存在，使用默认设置")
+            logging.info("配置文件不存在，使用默认设置")
     except Exception as e:
-        print(f"加载配置出错: {e}")
+        logging.error(f"加载配置出错: {e}")
 
 # 保存配置
 def save_config():
@@ -137,9 +155,9 @@ def save_config():
         }
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
-        print("配置已保存")
+        logging.info("配置已保存")
     except Exception as e:
-        print(f"保存配置出错: {e}")
+        logging.error(f"保存配置出错: {e}")
 
 # 广播统计数据给所有连接
 async def broadcast_stats():
@@ -158,7 +176,16 @@ async def broadcast_setting(setting_key: str, setting_value: Any):
         "value": setting_value
     }
     await broadcast_to_all(json.dumps(message))
-    print(f"已广播设置更新: {setting_key}={setting_value}")
+    logging.info(f"已广播设置更新: {setting_key}={setting_value}")
+
+# 广播一组设置给所有连接
+async def broadcast_settings_to_all(settings: Dict[str, Any]):
+    message = {
+        "type": "setting_update",
+        "settings": settings
+    }
+    await broadcast_to_all(json.dumps(message))
+    logging.info(f"已广播批量设置更新: {settings}")
 
 # 广播消息给所有连接
 async def broadcast_to_all(message: str):
@@ -183,7 +210,7 @@ async def get_group_id_from_session_id(session_id: str) -> Optional[str]:
     # 尝试从缓存获取
     if session_id in session_to_group_map:
         group_id = session_to_group_map[session_id]
-        print(f"从缓存获取映射: session_id={session_id} -> group_id={group_id}")
+        logging.debug(f"从缓存获取映射: session_id={session_id} -> group_id={group_id}")
         return group_id
     
     # 如果缓存中没有，从数据库获取
@@ -195,22 +222,31 @@ async def get_group_id_from_session_id(session_id: str) -> Optional[str]:
             
             if group_id:
                 session_to_group_map[session_id] = group_id
-                print(f"从数据库获取映射: session_id={session_id} -> group_id={group_id}")
+                logging.debug(f"从数据库获取映射: session_id={session_id} -> group_id={group_id}")
                 return group_id
             else:
-                print(f"未找到映射: session_id={session_id}")
+                logging.debug(f"未找到映射: session_id={session_id}")
                 return None
     except Exception as e:
-        print(f"获取群聊ID出错: {e}")
+        logging.error(f"获取群聊ID出错: {e}")
         return None
 
 # 处理WebSocket消息
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global active_group_id, danmaku_speed # Declare both as global at the top
+    global active_group_id, danmaku_speed, global_filter_enabled, global_allowed_groups # Declare globals
 
     initial_ui_hint_group_id = active_group_id 
     current_danmaku_speed = danmaku_speed # Read global danmaku_speed for initial settings
+
+    # 鉴权：仅允许本机访问 WebSocket
+    client_host = websocket.client.host if websocket.client else None
+    if client_host not in ALLOWED_LOCALHOSTS:
+        try:
+            await websocket.close(code=1008, reason="Forbidden")
+        except Exception:
+            pass
+        return
 
     await websocket.accept()
     logging.info("connection open")
@@ -222,6 +258,9 @@ async def websocket_endpoint(websocket: WebSocket):
     
     try:
         active_connections.append((websocket, connection_filter))
+        # 新连接继承全局过滤状态
+        connection_filter["enabled"] = global_filter_enabled
+        connection_filter["allowed_groups"] = list(global_allowed_groups)
         
         await websocket.send_text(json.dumps({
             "type": "connection",
@@ -229,6 +268,12 @@ async def websocket_endpoint(websocket: WebSocket):
             "settings": {
                 "danmaku_speed": current_danmaku_speed # Use the locally captured speed
             }
+        }))
+        # 将当前全局过滤状态单播给新连接（便于客户端UI与过滤同步）
+        await websocket.send_text(json.dumps({
+            "type": "broadcast_filter_update",
+            "filter_enabled": global_filter_enabled,
+            "allowed_groups": global_allowed_groups
         }))
         
         if initial_ui_hint_group_id:
@@ -250,14 +295,16 @@ async def websocket_endpoint(websocket: WebSocket):
                         filter_enabled_req = message.get("filter_enabled", False)
                         session_ids_req = message.get("groups", [])
                         
-                        print(f"收到 set_groups 命令: 启用={filter_enabled_req}, 群列表(session_ids)={session_ids_req}")
+                        logging.info(f"收到 set_groups 命令: 启用={filter_enabled_req}, 群列表(session_ids)={session_ids_req}")
                         
                         # 将session_id映射到实际的group_id
                         target_group_ids = []
                         for session_id_val in session_ids_req:
                             group_id_val = await get_group_id_from_session_id(session_id_val)
-                            if group_id_val and group_id_val not in target_group_ids:
-                                target_group_ids.append(group_id_val)
+                            if group_id_val is not None:
+                                gid_str = str(group_id_val)
+                                if gid_str not in target_group_ids:
+                                    target_group_ids.append(gid_str)
                         
                         # 更新所有活动连接的过滤器设置
                         # 这是关键：确保所有连接（包括主弹幕页和控制面板预览）都采用相同的过滤规则
@@ -266,6 +313,10 @@ async def websocket_endpoint(websocket: WebSocket):
                             conn_filter_ref["enabled"] = filter_enabled_req
                             conn_filter_ref["allowed_groups"] = target_group_ids # 使用实际的group_id列表
                             updated_connection_count += 1
+
+                        # 更新全局过滤状态，供后续新连接继承
+                        global_filter_enabled = filter_enabled_req
+                        global_allowed_groups = list(target_group_ids)
                         
                         logging.info(f"已为 {updated_connection_count} 个活动连接更新过滤器: enabled={filter_enabled_req}, allowed_group_ids={target_group_ids}")
                         
@@ -285,14 +336,32 @@ async def websocket_endpoint(websocket: WebSocket):
                         }
                         await broadcast_to_all(json.dumps(filter_update_payload))
                         logging.info(f"已广播客户端过滤器更新通知: enabled={filter_enabled_req}, groups={target_group_ids}")
+                    elif action == "broadcast_settings":
+                        settings_payload = message.get("settings", {})
+                        if isinstance(settings_payload, dict) and len(settings_payload) > 0:
+                            await broadcast_settings_to_all(settings_payload)
+                            await websocket.send_text(json.dumps({
+                                "type": "command_response",
+                                "action": "broadcast_settings",
+                                "status": "success",
+                                "message": "设置已广播",
+                                "debug_info": {"settings": settings_payload}
+                            }))
+                        else:
+                            await websocket.send_text(json.dumps({
+                                "type": "command_response",
+                                "action": "broadcast_settings",
+                                "status": "error",
+                                "message": "无效的设置"
+                            }))
                     elif action == "set_active_group":
                         session_id_param = message.get("group_id")
                         if session_id_param:
                             target_group_id_val = await get_group_id_from_session_id(session_id_param)
                             if target_group_id_val:
                                 connection_filter["enabled"] = True
-                                connection_filter["allowed_groups"] = [target_group_id_val]
-                                print(f"Connection {websocket.client} listening to group: {target_group_id_val}")
+                                connection_filter["allowed_groups"] = [str(target_group_id_val)]
+                                logging.info(f"连接 {websocket.client} 监听群: {target_group_id_val}")
                                 
                                 # active_group_id is already global due to declaration at function top
                                 active_group_id = target_group_id_val # Modifies the global active_group_id
@@ -587,35 +656,35 @@ async def check_for_new_messages():
             latest_time = result.scalar_one_or_none()
             
             if latest_time is None:
-                print("数据库中没有消息，使用当前时间")
+                logging.info("数据库中没有消息，使用当前时间")
                 # 如果数据库为空，使用当前时间
                 initial_check_time = datetime.utcnow() - timedelta(hours=1)
             else:
-                print(f"数据库最新消息时间: {latest_time} (UTC时间)")
+                logging.debug(f"数据库最新消息时间: {latest_time} (UTC时间)")
                 # 重要修改：检查数据库时间是否在未来
                 if latest_time > datetime.utcnow():
-                    print("警告：数据库时间在未来！使用当前时间回退24小时作为初始检查时间")
+                    logging.warning("数据库时间在未来！使用当前时间回退24小时作为初始检查时间")
                     initial_check_time = datetime.utcnow() - timedelta(hours=24)
                 else:
                     # 使用数据库中最新消息的时间作为起始检查时间
                     initial_check_time = latest_time
     except Exception as e:
-        print(f"获取最新消息时间出错: {e}")
+        logging.error(f"获取最新消息时间出错: {e}")
         # 如果查询出错，使用当前时间
         initial_check_time = datetime.utcnow() - timedelta(hours=1)
     
     last_check_time = initial_check_time
-    print(f"初始检查时间设置为: {last_check_time} (UTC时间)")
+    logging.info(f"初始检查时间设置为: {last_check_time} (UTC时间)")
     
     while True:
         try:
             # 输出当前系统时间（东八区）和转换后的UTC时间，用于调试
             local_now = datetime.now()
             utc_now = datetime.utcnow()
-            print(f"当前系统时间: {local_now} (东八区), 转换为UTC: {utc_now}")
+            logging.debug(f"当前系统时间: {local_now} (东八区), 转换为UTC: {utc_now}")
             
             # 查询自上次检查以来的新消息
-            print(f"查询 {last_check_time} 之后的消息")
+            logging.debug(f"查询 {last_check_time} 之后的消息")
             
             async with async_session() as session:
                 # 先查询最新的消息时间，用于后续更新last_check_time
@@ -624,17 +693,17 @@ async def check_for_new_messages():
                 db_latest_time = latest_time_result.scalar_one_or_none()
                 
                 if db_latest_time:
-                    print(f"数据库最新消息时间: {db_latest_time} (UTC时间)")
+                    logging.debug(f"数据库最新消息时间: {db_latest_time} (UTC时间)")
                     
                     # 重要修改：如果数据库时间超前于当前时间，重置查询时间
                     if db_latest_time > utc_now:
-                        print(f"警告：数据库时间 {db_latest_time} 超出当前UTC时间 {utc_now}！")
+                        logging.warning(f"数据库时间 {db_latest_time} 超出当前UTC时间 {utc_now}！")
                         # 如果超过48小时，可能是时区或系统时间问题
                         if (db_latest_time - utc_now) > timedelta(hours=48):
-                            print("数据库时间异常！可能是时区设置或系统时间错误")
+                            logging.warning("数据库时间异常！可能是时区设置或系统时间错误")
                             # 尝试降低查询时间阈值
                             last_check_time = utc_now - timedelta(minutes=5)
-                            print(f"已将查询时间阈值降低为 {last_check_time}")
+                            logging.warning(f"已将查询时间阈值降低为 {last_check_time}")
                 
                 # 查询新消息
                 query = select(MessageRecord, SessionModel).join(
@@ -647,17 +716,17 @@ async def check_for_new_messages():
                 new_messages = result.fetchall()
                 
                 if new_messages:
-                    print(f"发现 {len(new_messages)} 条新消息")
+                    logging.debug(f"发现 {len(new_messages)} 条新消息")
                     
                     # 处理每条新消息
                     for i, (message, session) in enumerate(new_messages):
                         message_time_utc = message.time
                         message_time_local = message_time_utc + timedelta(hours=8)  # 转换为东八区时间
                         
-                        print(f"消息{i+1}时间: {message_time_utc} (UTC) / {message_time_local} (本地), 内容: {message.plain_text[:20]}...")
+                        logging.debug(f"消息{i+1}时间: {message_time_utc} (UTC) / {message_time_local} (本地), 内容: {message.plain_text[:20]}...")
                         
-                        # 获取群ID
-                        group_id = session.id2
+                        # 获取群ID并标准化为字符串
+                        group_id = str(session.id2)
 
                         # 处理消息内容，移除前缀
                         content = message.plain_text
@@ -673,12 +742,12 @@ async def check_for_new_messages():
                                     content = parts[1].lstrip() # Use lstrip to remove leading space if any
 
                         # 调试打印
-                        print(f"处理新消息: 群={group_id}, 用户={session.id1}, 时间={message_time_utc} (UTC) / {message_time_local} (本地), 内容={str(content)[:20]}...")
+                        logging.debug(f"处理新消息: 群={group_id}, 用户={session.id1}, 时间={message_time_utc} (UTC) / {message_time_local} (本地), 内容={str(content)[:20]}...")
                         
                         sent_count = 0
                         for connection, filter_settings in active_connections:
                             try:
-                                print(f"连接过滤设置: enabled={filter_settings['enabled']}, allowed_groups={filter_settings['allowed_groups']}, 当前消息群ID={group_id}")
+                                logging.debug(f"连接过滤设置: enabled={filter_settings['enabled']}, allowed_groups={filter_settings['allowed_groups']}, 当前消息群ID={group_id}")
                                 
                                 # 修正的过滤逻辑：
                                 should_send = False
@@ -692,7 +761,7 @@ async def check_for_new_messages():
                                 else: # filter_settings['enabled'] is False
                                     # 修复：如果过滤器未启用，接收所有消息（原始行为）
                                     should_send = True
-                                    print(f"过滤器未启用，将发送所有消息（群ID = {group_id}）")
+                                    logging.debug(f"过滤器未启用，将发送所有消息（群ID = {group_id}）")
 
                                 if should_send:
                                     danmaku_message = {
@@ -706,11 +775,11 @@ async def check_for_new_messages():
                                     
                                     await connection.send_text(json.dumps(danmaku_message))
                                     sent_count += 1
-                                    print(f"发送弹幕成功: 群={group_id}, 内容={str(content)[:20]}...")
+                                    logging.debug(f"发送弹幕成功: 群={group_id}, 内容={str(content)[:20]}...")
                             except Exception as e:
-                                print(f"发送消息时出错: {str(e)}")
+                                logging.error(f"发送消息时出错: {str(e)}")
                         
-                        print(f"消息已发送给 {sent_count}/{len(active_connections)} 个连接")
+                        logging.debug(f"消息已发送给 {sent_count}/{len(active_connections)} 个连接")
                     
                     # 更新最后检查时间（加上1毫秒避免重复获取同一条消息）
                     # 使用数据库中的最新消息时间，而非本地时间
@@ -721,18 +790,16 @@ async def check_for_new_messages():
                         last_message_time = new_messages[-1][0].time
                         last_check_time = last_message_time + timedelta(milliseconds=1)
                     
-                    print(f"更新最后检查时间为: {last_check_time} (UTC时间)")
+                    logging.debug(f"更新最后检查时间为: {last_check_time} (UTC时间)")
                 else:
                     # 重要修改：如果查询了一段时间都没有消息，间隔性重置查询时间，避免永远等待未来
                     now = datetime.utcnow()
                     # 如果上次检查时间超过当前时间5分钟，可能是检测时间阻塞在未来
                     if last_check_time > now + timedelta(minutes=5):
-                        print(f"警告：检查时间 {last_check_time} 异常超前，重置为当前时间前1小时")
+                        logging.warning(f"检查时间 {last_check_time} 异常超前，重置为当前时间前1小时")
                         last_check_time = now - timedelta(hours=1)
         except Exception as e:
-            print(f"检查新消息时出错: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            logging.error(f"检查新消息时出错: {str(e)}", exc_info=True)
         
         # 等待1秒再次检查
         await asyncio.sleep(1)
@@ -765,4 +832,4 @@ async def startup_event():
     print("="*50)
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True) 
+    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
