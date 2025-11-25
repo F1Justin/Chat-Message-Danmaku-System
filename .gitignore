@@ -9,7 +9,8 @@ build/
 *.egg-info/
 
 # 虚拟环境
-venv/
+.env/
+.venv/
 env/
 ENV/
 
