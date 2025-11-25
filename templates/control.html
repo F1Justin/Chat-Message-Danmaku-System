@@ -3,340 +3,461 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>弹幕系统控制台</title>
+    <title>弹幕控制台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
+        /* ============================================================
+           主题变量
+           ============================================================ */
+        
         :root {
-            /* 亮色模式变量 */
-            --bg-color: #f5f5f5;
-            --card-bg: white;
-            --text-color: #333;
-            --border-color: #ddd;
-            --primary-color: #4caf50;
-            --primary-color-rgb: 76, 175, 80;
-            --primary-hover: #388e3c;
-            --secondary-color: #2196f3;
-            --secondary-hover: #1976d2;
-            --danger-color: #f44336;
-            --danger-hover: #d32f2f;
-            --header-color: #333;
-            --muted-color: #757575;
-            --debug-bg: #263238;
-            --debug-text: #eee;
-            --debug-border: #455a64;
-            --timestamp-color: #80deea;
-            --shadow-color: rgba(0, 0, 0, 0.1);
-            --stat-value-color: #2196f3;
+            /* 暗色主题（默认） */
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-tertiary: #1a1a25;
+            --bg-hover: #22222f;
+            --bg-active: #2a2a3a;
+            
+            --text-primary: #f0f0f5;
+            --text-secondary: #8888a0;
+            --text-muted: #55556a;
+            
+            --accent-primary: #6366f1;
+            --accent-secondary: #22d3ee;
+            --accent-success: #10b981;
+            --accent-warning: #f59e0b;
+            --accent-danger: #ef4444;
+            
+            --accent-glow: rgba(99, 102, 241, 0.4);
+            
+            --border-subtle: rgba(255, 255, 255, 0.06);
+            --border-default: rgba(255, 255, 255, 0.1);
+            
+            --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
+            --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.4);
+            
+            --scrollbar-bg: transparent;
+            --scrollbar-thumb: rgba(255, 255, 255, 0.15);
+            
+            /* 通用变量 */
+            --radius-sm: 6px;
+            --radius-md: 10px;
+            --radius-lg: 16px;
+            --radius-xl: 24px;
+            
+            --transition-fast: 150ms ease;
+            --transition-base: 250ms ease;
+            
+            --font-sans: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+            --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
         }
         
-        @media (prefers-color-scheme: dark) {
-            :root {
-                /* 深色模式变量 */
-                --bg-color: #121212;
-                --card-bg: #1e1e1e;
-                --text-color: #e0e0e0;
-                --border-color: #333;
-                --primary-color: #66bb6a;
-                --primary-color-rgb: 102, 187, 106;
-                --primary-hover: #4caf50;
-                --secondary-color: #42a5f5;
-                --secondary-hover: #2196f3;
-                --danger-color: #ef5350;
-                --danger-hover: #f44336;
-                --header-color: #e0e0e0;
-                --muted-color: #9e9e9e;
-                --debug-bg: #1a1a1a;
-                --debug-text: #e0e0e0;
-                --debug-border: #333;
-                --timestamp-color: #4fc3f7;
-                --shadow-color: rgba(0, 0, 0, 0.4);
-                --stat-value-color: #42a5f5;
-            }
+        /* 浅色主题 */
+        [data-theme="light"] {
+            --bg-primary: #f5f7fa;
+            --bg-secondary: #ffffff;
+            --bg-tertiary: #f0f2f5;
+            --bg-hover: #e8eaed;
+            --bg-active: #dfe1e4;
+            
+            --text-primary: #1a1a2e;
+            --text-secondary: #5a5a7a;
+            --text-muted: #9a9ab0;
+            
+            --accent-primary: #5b5fc7;
+            --accent-secondary: #0891b2;
+            --accent-success: #059669;
+            --accent-warning: #d97706;
+            --accent-danger: #dc2626;
+            
+            --accent-glow: rgba(91, 95, 199, 0.25);
+            
+            --border-subtle: rgba(0, 0, 0, 0.06);
+            --border-default: rgba(0, 0, 0, 0.1);
+            
+            --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.08);
+            --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.12);
+            
+            --scrollbar-bg: #f0f2f5;
+            --scrollbar-thumb: rgba(0, 0, 0, 0.15);
+        }
+        
+        /* ============================================================
+           基础样式
+           ============================================================ */
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
         
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', 'Helvetica Neue', Ubuntu, 'Noto Sans', 'Source Han Sans CN', 'Source Han Sans SC', sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: var(--bg-color);
-            color: var(--text-color);
+            font-family: var(--font-sans);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+            transition: background-color var(--transition-base), color var(--transition-base);
         }
         
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-        
-        @media (max-width: 768px) {
-            .container {
-                grid-template-columns: 1fr;
-            }
-        }
-        
-        .card {
-            background-color: var(--card-bg);
-            border-radius: 8px;
-            box-shadow: 0 2px 10px var(--shadow-color);
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-        
-        h1, h2, h3 {
-            margin-top: 0;
-            color: var(--header-color);
-        }
-        
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-        }
-        
-        .status-indicator {
-            display: inline-block;
-            padding: 5px 10px;
-            border-radius: 4px;
-            font-weight: bold;
-            background-color: var(--danger-color);
-            color: white;
-        }
-        
-        .status-indicator.connected {
-            background-color: var(--primary-color);
-        }
-        
-        select, input, button {
-            padding: 8px 12px;
-            border-radius: 4px;
-            border: 1px solid var(--border-color);
-            margin: 5px 0;
-            background-color: var(--card-bg);
-            color: var(--text-color);
-        }
-        
-        select {
-            width: 100%;
-            max-height: 150px;
-        }
-        
-        button {
-            background-color: var(--primary-color);
-            color: white;
-            border: none;
-            cursor: pointer;
-            margin-right: 10px;
-            transition: background-color 0.3s;
-        }
-        
-        button:hover {
-            background-color: var(--primary-hover);
-        }
-        
-        button.secondary {
-            background-color: var(--secondary-color);
-        }
-        
-        button.secondary:hover {
-            background-color: var(--secondary-hover);
-        }
-        
-        button.danger {
-            background-color: var(--danger-color);
-        }
-        
-        button.danger:hover {
-            background-color: var(--danger-hover);
-        }
-        
-        .form-group {
-            margin-bottom: 15px;
-        }
-        
-        label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
-        }
-        
-        .debug-panel {
-            background-color: var(--debug-bg);
-            color: var(--debug-text);
-            padding: 10px;
-            border-radius: 4px;
-            font-family: monospace;
-            height: 300px;
-            overflow-y: auto;
-        }
-        
-        .debug-message {
-            margin: 5px 0;
-            border-bottom: 1px solid var(--debug-border);
-            padding-bottom: 5px;
-        }
-        
-        .timestamp {
-            color: var(--timestamp-color);
-            margin-right: 10px;
-        }
-        
-        .preview-frame {
-            width: 100%;
-            height: 300px;
-            border: none;
-            border-radius: 4px;
-            background-color: #000;
-        }
-        
-        .stats {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 20px;
-        }
-        
-        .stat-card {
-            flex: 1;
-            background-color: var(--card-bg);
-            border-radius: 8px;
-            box-shadow: 0 2px 5px var(--shadow-color);
-            padding: 15px;
-            margin: 0 10px;
-            text-align: center;
-        }
-        
-        .stat-card:first-child {
-            margin-left: 0;
-        }
-        
-        .stat-card:last-child {
-            margin-right: 0;
-        }
-        
-        .stat-value {
-            font-size: 24px;
-            font-weight: bold;
-            margin: 10px 0;
-            color: var(--stat-value-color);
-        }
-        
-        .stat-label {
-            font-size: 14px;
-            color: var(--muted-color);
-        }
-        
-        .theme-toggle {
-            margin-left: 10px;
-            display: flex;
-            align-items: center;
-        }
-        
-        .theme-toggle label {
-            margin: 0 10px 0 0;
-            font-weight: normal;
-        }
-        
-        .theme-toggle-switch {
-            position: relative;
-            display: inline-block;
-            width: 50px;
-            height: 24px;
-        }
-        
-        .theme-toggle-switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-        
-        .switch-slider {
-            position: absolute;
-            cursor: pointer;
+        /* 背景装饰 */
+        body::before {
+            content: '';
+            position: fixed;
             top: 0;
             left: 0;
             right: 0;
             bottom: 0;
-            background-color: #ccc;
-            transition: .4s;
-            border-radius: 24px;
+            background: 
+                radial-gradient(ellipse 80% 50% at 20% -20%, rgba(99, 102, 241, 0.12), transparent),
+                radial-gradient(ellipse 60% 40% at 80% 100%, rgba(34, 211, 238, 0.08), transparent);
+            pointer-events: none;
+            z-index: -1;
+            opacity: 1;
+            transition: opacity var(--transition-base);
         }
         
-        .switch-slider:before {
-            position: absolute;
-            content: "";
-            height: 16px;
-            width: 16px;
-            left: 4px;
-            bottom: 4px;
-            background-color: white;
-            transition: .4s;
-            border-radius: 50%;
+        [data-theme="light"] body::before {
+            opacity: 0.5;
         }
         
-        input:checked + .switch-slider {
-            background-color: var(--primary-color);
+        /* ============================================================
+           布局
+           ============================================================ */
+        
+        .app {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 24px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 1fr);
+            gap: 20px;
+            min-height: 100vh;
         }
         
-        input:checked + .switch-slider:before {
-            transform: translateX(26px);
+        @media (max-width: 1024px) {
+            .app {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto;
+            }
         }
         
-        .theme-icon {
-            margin-left: 5px;
-            font-size: 16px;
-        }
+        /* ============================================================
+           头部
+           ============================================================ */
         
-        /* 群聊列表样式 */
-        .search-box {
+        .header {
+            grid-column: 1 / -1;
             display: flex;
-            margin-bottom: 10px;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 24px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-sm);
         }
         
-        .search-box input {
-            flex: 1;
-            margin-right: 10px;
-        }
-        
-        .group-tabs {
+        .logo {
             display: flex;
-            margin-bottom: 10px;
-            border-bottom: 1px solid var(--border-color);
+            align-items: center;
+            gap: 12px;
         }
         
-        .tab-button {
-            padding: 8px 15px;
-            background: none;
-            border: none;
+        .logo-icon {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            border-radius: var(--radius-md);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }
+        
+        .logo-text {
+            font-size: 20px;
+            font-weight: 700;
+        }
+        
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        /* 主题切换 */
+        .theme-toggle {
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-default);
+            border-radius: var(--radius-md);
             cursor: pointer;
-            color: var(--text-color);
-            border-bottom: 2px solid transparent;
-            transition: all 0.2s;
+            font-size: 18px;
+            transition: var(--transition-fast);
         }
         
-        .tab-button.active {
-            border-bottom: 2px solid var(--primary-color);
-            color: var(--primary-color);
+        .theme-toggle:hover {
+            background: var(--bg-hover);
+            border-color: var(--accent-primary);
         }
         
-        .group-list-container {
-            max-height: 300px;
+        .theme-icon-dark,
+        .theme-icon-light {
+            display: none;
+        }
+        
+        :root .theme-icon-dark { display: block; }
+        :root .theme-icon-light { display: none; }
+        [data-theme="light"] .theme-icon-dark { display: none; }
+        [data-theme="light"] .theme-icon-light { display: block; }
+        
+        .connection-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-xl);
+            font-size: 13px;
+            font-weight: 500;
+        }
+        
+        .connection-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-danger);
+            box-shadow: 0 0 8px var(--accent-danger);
+            transition: var(--transition-base);
+        }
+        
+        .connection-badge.connected .connection-dot {
+            background: var(--accent-success);
+            box-shadow: 0 0 8px var(--accent-success);
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* ============================================================
+           统计卡片
+           ============================================================ */
+        
+        .stats-row {
+            grid-column: 1 / -1;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+        }
+        
+        @media (max-width: 768px) {
+            .stats-row { grid-template-columns: 1fr; }
+        }
+        
+        .stat-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            padding: 20px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            box-shadow: var(--shadow-sm);
+            transition: var(--transition-base);
+        }
+        
+        .stat-card:hover {
+            border-color: var(--border-default);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-md);
+        }
+        
+        .stat-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: var(--radius-md);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+        }
+        
+        .stat-icon.connections { background: rgba(99, 102, 241, 0.15); }
+        .stat-icon.danmaku { background: rgba(34, 211, 238, 0.15); }
+        .stat-icon.rate { background: rgba(16, 185, 129, 0.15); }
+        
+        .stat-value {
+            font-size: 28px;
+            font-weight: 700;
+            font-family: var(--font-mono);
+            line-height: 1.2;
+        }
+        
+        .stat-label {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+        
+        /* ============================================================
+           卡片
+           ============================================================ */
+        
+        .card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
+            min-height: 0;
+        }
+        
+        .card-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-subtle);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+        
+        .card-title {
+            font-size: 15px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .card-body {
+            padding: 16px 20px;
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+        
+        .card-footer {
+            padding: 12px 20px;
+            border-top: 1px solid var(--border-subtle);
+            background: var(--bg-tertiary);
+            flex-shrink: 0;
+        }
+        
+        /* ============================================================
+           表单元素
+           ============================================================ */
+        
+        .search-input {
+            width: 100%;
+            padding: 10px 14px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-default);
+            border-radius: var(--radius-md);
+            color: var(--text-primary);
+            font-size: 14px;
+            transition: var(--transition-fast);
+        }
+        
+        .search-input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+        
+        .search-input::placeholder {
+            color: var(--text-muted);
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 4px;
+            margin-top: 12px;
+            padding: 4px;
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-md);
+            flex-shrink: 0;
+        }
+        
+        .tab {
+            flex: 1;
+            padding: 8px 12px;
+            background: transparent;
+            border: none;
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: var(--transition-fast);
+        }
+        
+        .tab:hover {
+            color: var(--text-primary);
+            background: var(--bg-hover);
+        }
+        
+        .tab.active {
+            background: var(--accent-primary);
+            color: white;
+        }
+        
+        /* ============================================================
+           群组列表（固定高度+滚动）
+           ============================================================ */
+        
+        .group-list {
+            flex: 1;
+            min-height: 200px;
+            max-height: 280px;
             overflow-y: auto;
-            border: 1px solid var(--border-color);
+            margin-top: 12px;
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-md);
+            background: var(--bg-primary);
+        }
+        
+        .group-list::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        .group-list::-webkit-scrollbar-track {
+            background: var(--scrollbar-bg);
             border-radius: 4px;
         }
         
-        .group-list {
-            padding: 5px;
+        .group-list::-webkit-scrollbar-thumb {
+            background: var(--scrollbar-thumb);
+            border-radius: 4px;
+        }
+        
+        .group-list::-webkit-scrollbar-thumb:hover {
+            background: var(--text-muted);
         }
         
         .group-item {
-            padding: 10px;
-            border-bottom: 1px solid var(--border-color);
-            cursor: pointer;
-            transition: background-color 0.2s;
             display: flex;
             align-items: center;
+            gap: 12px;
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--border-subtle);
+            cursor: pointer;
+            transition: var(--transition-fast);
         }
         
         .group-item:last-child {
@@ -344,968 +465,1219 @@
         }
         
         .group-item:hover {
-            background-color: rgba(var(--primary-color-rgb), 0.1);
-        }
-        
-        .group-item.selected {
-            background-color: rgba(var(--primary-color-rgb), 0.2);
-        }
-        
-        .group-item.favorite {
-            background-color: rgba(var(--primary-color-rgb), 0.1);
-            border-left: 3px solid var(--primary-color);
-            font-weight: bold;
-        }
-        
-        .group-item.favorite.selected {
-            background-color: rgba(var(--primary-color-rgb), 0.3);
+            background: var(--bg-hover);
         }
         
         .group-item.listening {
-            background-color: rgba(var(--primary-color-rgb), 0.3);
-            font-weight: bold;
+            background: rgba(99, 102, 241, 0.1);
+            border-left: 3px solid var(--accent-primary);
+        }
+        
+        .group-checkbox {
+            width: 18px;
+            height: 18px;
+            accent-color: var(--accent-primary);
+            cursor: pointer;
+            flex-shrink: 0;
         }
         
         .group-info {
             flex: 1;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            min-width: 0;
         }
         
         .group-name {
-            font-weight: bold;
+            font-size: 14px;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .group-id {
+            font-size: 12px;
+            color: var(--text-muted);
+            font-family: var(--font-mono);
         }
         
         .group-actions {
             display: flex;
+            gap: 4px;
+            opacity: 0;
+            transition: var(--transition-fast);
         }
         
-        .action-button {
-            background: none;
-            border: none;
+        .group-item:hover .group-actions {
+            opacity: 1;
+        }
+        
+        .status-bar {
+            margin-top: 12px;
+            padding: 10px 14px;
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-md);
+            font-size: 13px;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        
+        .status-bar.active {
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--accent-success);
+        }
+        
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+            flex-shrink: 0;
+        }
+        
+        /* ============================================================
+           按钮
+           ============================================================ */
+        
+        .btn-group {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 10px 16px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-default);
+            border-radius: var(--radius-md);
+            color: var(--text-primary);
+            font-size: 13px;
+            font-weight: 500;
             cursor: pointer;
-            font-size: 16px;
-            padding: 2px 5px;
-            margin-left: 5px;
+            transition: var(--transition-fast);
+            white-space: nowrap;
+        }
+        
+        .btn:hover {
+            background: var(--bg-hover);
+            border-color: var(--text-muted);
+        }
+        
+        .btn-primary {
+            background: var(--accent-primary);
+            border-color: var(--accent-primary);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #5558e3;
+            border-color: #5558e3;
+        }
+        
+        .btn-danger {
+            background: transparent;
+            border-color: var(--accent-danger);
+            color: var(--accent-danger);
+        }
+        
+        .btn-danger:hover {
+            background: rgba(239, 68, 68, 0.1);
+        }
+        
+        .icon-btn {
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            border: none;
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: var(--transition-fast);
+            font-size: 14px;
+        }
+        
+        .icon-btn:hover {
+            background: var(--bg-active);
+            color: var(--text-primary);
+        }
+        
+        .icon-btn.favorite.active {
+            color: var(--accent-warning);
+        }
+        
+        /* ============================================================
+           预览区域
+           ============================================================ */
+        
+        .preview-container {
+            position: relative;
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            background: #000;
+            aspect-ratio: 16 / 9;
+        }
+        
+        .preview-frame {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+        
+        .preview-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 12px;
+            background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+        
+        .preview-btn {
+            padding: 6px 12px;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: var(--radius-sm);
+            color: white;
+            font-size: 12px;
+            cursor: pointer;
+            transition: var(--transition-fast);
+        }
+        
+        .preview-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .url-copy {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        
+        .url-input {
+            flex: 1;
+            padding: 10px 14px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-default);
+            border-radius: var(--radius-md);
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-family: var(--font-mono);
+        }
+        
+        /* ============================================================
+           设置区域
+           ============================================================ */
+        
+        .settings-grid {
+            display: grid;
+            gap: 16px;
+        }
+        
+        .setting-item {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .setting-label {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+        
+        .setting-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .slider-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .slider {
+            flex: 1;
+            height: 6px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: var(--bg-tertiary);
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        
+        .slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            background: var(--accent-primary);
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 2px 8px var(--accent-glow);
+        }
+        
+        .slider-value {
+            min-width: 48px;
+            padding: 6px 10px;
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-sm);
+            text-align: center;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            color: var(--accent-secondary);
+        }
+        
+        .number-input {
+            width: 80px;
+            padding: 8px 12px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-default);
+            border-radius: var(--radius-md);
+            color: var(--text-primary);
+            font-size: 14px;
+            font-family: var(--font-mono);
+            text-align: center;
+        }
+        
+        .number-input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+        }
+        
+        /* ============================================================
+           日志面板
+           ============================================================ */
+        
+        .log-panel {
+            flex: 1;
+            min-height: 150px;
+            max-height: 250px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .log-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        
+        .log-content::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .log-content::-webkit-scrollbar-thumb {
+            background: var(--scrollbar-thumb);
             border-radius: 3px;
         }
         
-        .action-button:hover {
-            background-color: rgba(0, 0, 0, 0.1);
+        .log-entry {
+            padding: 4px 8px;
+            border-radius: var(--radius-sm);
+            margin-bottom: 2px;
         }
         
-        .loading-indicator, .empty-message, .error-message {
-            padding: 20px;
+        .log-entry:hover {
+            background: var(--bg-hover);
+        }
+        
+        .log-time {
+            color: var(--text-muted);
+            margin-right: 8px;
+        }
+        
+        .log-message {
+            color: var(--text-secondary);
+        }
+        
+        .log-message.success { color: var(--accent-success); }
+        .log-message.error { color: var(--accent-danger); }
+        .log-message.warn { color: var(--accent-warning); }
+        
+        /* ============================================================
+           其他
+           ============================================================ */
+        
+        .empty-state {
+            padding: 40px 20px;
             text-align: center;
-            color: var(--muted-color);
+            color: var(--text-muted);
         }
         
-        .error-message {
-            color: var(--danger-color);
+        .empty-icon {
+            font-size: 32px;
+            margin-bottom: 12px;
+            opacity: 0.5;
         }
         
-        .group-item input[type="checkbox"] {
-            margin-right: 10px;
+        .loading-spinner {
+            width: 24px;
+            height: 24px;
+            border: 2px solid var(--border-default);
+            border-top-color: var(--accent-primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 20px auto;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .copy-toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            padding: 12px 24px;
+            background: var(--accent-success);
+            color: white;
+            border-radius: var(--radius-md);
+            font-size: 14px;
+            font-weight: 500;
+            opacity: 0;
+            transition: var(--transition-base);
+            z-index: 1000;
+        }
+        
+        .copy-toast.show {
+            transform: translateX(-50%) translateY(0);
+            opacity: 1;
+        }
+        
+        /* 模态框 */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: var(--transition-base);
+        }
+        
+        .modal-overlay.show {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .modal {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-default);
+            border-radius: var(--radius-lg);
+            padding: 24px;
+            width: 90%;
+            max-width: 400px;
+            transform: scale(0.95);
+            transition: var(--transition-base);
+            box-shadow: var(--shadow-md);
+        }
+        
+        .modal-overlay.show .modal {
+            transform: scale(1);
+        }
+        
+        .modal-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }
+        
+        .modal-input {
+            width: 100%;
+            padding: 12px 14px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-default);
+            border-radius: var(--radius-md);
+            color: var(--text-primary);
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+        
+        .modal-input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+        }
+        
+        .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header" style="grid-column: 1 / -1;">
-            <h1>群聊弹幕系统控制台</h1>
-            <div style="display: flex; align-items: center;">
-                <div class="status-indicator" id="connection-status">未连接</div>
+    <div class="app">
+        <!-- 头部 -->
+        <header class="header">
+            <div class="logo">
+                <div class="logo-icon">💬</div>
+                <span class="logo-text">弹幕控制台</span>
+            </div>
+            <div class="header-actions">
+                <button class="theme-toggle" id="theme-toggle" title="切换主题">
+                    <span class="theme-icon-dark">🌙</span>
+                    <span class="theme-icon-light">☀️</span>
+                </button>
+                <div class="connection-badge" id="connection-badge">
+                    <span class="connection-dot"></span>
+                    <span id="connection-text">未连接</span>
+        </div>
+            </div>
+        </header>
+        
+        <!-- 统计卡片 -->
+        <div class="stats-row">
+            <div class="stat-card">
+                <div class="stat-icon connections">🔗</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="stat-connections">0</div>
+                    <div class="stat-label">活跃连接</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon danmaku">💭</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="stat-danmaku">0</div>
+                    <div class="stat-label">当前弹幕</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon rate">⚡</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="stat-rate">0</div>
+                    <div class="stat-label">消息/分钟</div>
+                </div>
             </div>
         </div>
         
-        <div class="stats" style="grid-column: 1 / -1;">
-            <div class="stat-card">
-                <div class="stat-label">活跃连接数</div>
-                <div class="stat-value" id="active-connections">0</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">当前弹幕数</div>
-                <div class="stat-value" id="active-danmaku">0</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">消息接收速率</div>
-                <div class="stat-value" id="message-rate">0/分钟</div>
-            </div>
-        </div>
-        
+        <!-- 群组选择 -->
         <div class="card">
-            <h2>群聊选择</h2>
-            <div class="form-group">
-                <div class="search-box">
-                    <input type="text" id="group-search" placeholder="搜索群聊..." />
-                    <button id="refresh-groups" class="secondary">刷新群列表</button>
+            <div class="card-header">
+                <span class="card-title">
+                    <span>📋</span>
+                    群聊选择
+                </span>
+                <button class="icon-btn" id="refresh-groups" title="刷新">🔄</button>
                 </div>
-                <div class="group-tabs">
-                    <button class="tab-button active" data-tab="all">全部群聊</button>
-                    <button class="tab-button" data-tab="favorites">常用群聊</button>
+            <div class="card-body">
+                <input type="text" class="search-input" id="group-search" placeholder="搜索群聊名称或ID...">
+                
+                <div class="tabs">
+                    <button class="tab active" data-tab="all">全部</button>
+                    <button class="tab" data-tab="favorites">收藏</button>
                 </div>
-                <div class="group-list-container">
-                    <div id="group-list" class="group-list"></div>
+                
+                <div class="group-list" id="group-list">
+                    <div class="loading-spinner"></div>
+                </div>
+                
+                <div class="status-bar" id="filter-status">
+                    <span class="status-dot"></span>
+                    <span>未选择任何群聊</span>
+            </div>
+            </div>
+            <div class="card-footer">
+                <div class="btn-group">
+                    <button class="btn btn-primary" id="apply-groups">
+                        <span>✓</span>
+                        应用监听
+                    </button>
+                    <button class="btn" id="show-recent">
+                        <span>📜</span>
+                        最近消息
+                    </button>
+                    <button class="btn btn-danger" id="clear-listening">
+                        <span>✕</span>
+                        取消全部
+                    </button>
                 </div>
             </div>
-            <div class="form-group">
-                <button id="apply-selected-groups" class="primary">应用选中群聊</button>
-                <button id="clear-all-listening" class="danger">取消所有监听</button>
-                <button id="show-recent" class="secondary">显示最近消息</button>
-            </div>
-            <div id="group-filter-status">当前未监听任何群聊</div>
         </div>
         
+        <!-- 预览 -->
         <div class="card">
-            <h2>弹幕预览</h2>
+            <div class="card-header">
+                <span class="card-title">
+                    <span>🎬</span>
+                    弹幕预览
+                </span>
+            </div>
+            <div class="card-body">
+                <div class="preview-container">
             <iframe id="preview-frame" class="preview-frame" src="about:blank"></iframe>
-            <div class="form-group" style="margin-top: 15px;">
-                <button id="open-fullscreen">在新窗口打开弹幕</button>
-                <button id="clear-danmaku" class="danger">清空弹幕</button>
+                    <div class="preview-overlay">
+                        <button class="preview-btn" id="clear-danmaku">清空弹幕</button>
+                        <button class="preview-btn" id="open-fullscreen">新窗口打开</button>
             </div>
-            <div class="form-group">
-                <div style="display: flex; align-items: center;">
-                    <input type="text" id="danmaku-url" readonly style="flex: 1; margin-right: 10px;" />
-                    <button id="copy-url" style="flex-shrink: 0;">复制链接</button>
                 </div>
-                <div id="copy-status" style="font-size: 12px; margin-top: 5px; color: var(--primary-color); display: none;">链接已复制到剪贴板</div>
+                
+                <div class="url-copy">
+                    <input type="text" class="url-input" id="danmaku-url" readonly>
+                    <button class="btn" id="copy-url">
+                        <span>📋</span>
+                        复制
+                    </button>
+                </div>
             </div>
         </div>
         
+        <!-- 设置 -->
         <div class="card">
-            <h2>弹幕设置</h2>
-            <div class="form-group">
-                <label for="animation-method">动画方式：</label>
-                <select id="animation-method">
-                    <option value="transform">Transform (GPU加速)</option>
-                    <option value="left">Left (传统方式)</option>
-                </select>
+            <div class="card-header">
+                <span class="card-title">
+                    <span>⚙️</span>
+                    弹幕设置
+                </span>
             </div>
-            <div class="form-group">
-                <label for="max-danmaku">最大弹幕数：</label>
-                <input type="number" id="max-danmaku" value="50" min="10" max="200">
+            <div class="card-body">
+                <div class="settings-grid">
+                    <div class="setting-item">
+                        <label class="setting-label">弹幕速度</label>
+                        <div class="slider-container">
+                            <input type="range" class="slider" id="speed-slider" min="5" max="60" value="10">
+                            <span class="slider-value" id="speed-value">10s</span>
             </div>
-            <div class="form-group">
-                <label for="font-size">默认字体大小：</label>
-                <input type="number" id="font-size" value="32" min="16" max="48">
             </div>
-            <div class="form-group">
-                <label for="danmakuSpeed">弹幕速度 (5-60秒): <span id="speedValue">10</span> 秒</label>
-                <input type="range" id="danmakuSpeed" name="danmakuSpeed" min="5" max="60" value="10" style="width: 100%;">
+                    
+                    <div class="setting-item">
+                        <label class="setting-label">最大弹幕数</label>
+                        <div class="setting-row">
+                            <input type="number" class="number-input" id="max-danmaku" value="100" min="10" max="500">
             </div>
-            <div class="form-group">
-                <button id="apply-settings">应用设置</button>
-                <button id="connect-ws" class="secondary">重新连接</button>
+                    </div>
+                    
+                    <div class="setting-item">
+                        <label class="setting-label">字体大小</label>
+                        <div class="setting-row">
+                            <input type="number" class="number-input" id="font-size" value="48" min="16" max="72">
+                            <span style="color: var(--text-muted); font-size: 13px;">px</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card-footer">
+                <div class="btn-group">
+                    <button class="btn btn-primary" id="apply-settings">应用设置</button>
+                    <button class="btn" id="reconnect-ws">重新连接</button>
+                </div>
             </div>
         </div>
         
+        <!-- 日志 -->
         <div class="card">
-            <h2>调试信息</h2>
-            <div class="debug-panel" id="debug-panel">
-                <div class="debug-message">
-                    <span class="timestamp">[00:00:00]</span>
-                    <span>系统初始化...</span>
+            <div class="card-header">
+                <span class="card-title">
+                    <span>📝</span>
+                    系统日志
+                </span>
+                <button class="icon-btn" id="clear-logs" title="清空日志">🗑️</button>
+            </div>
+            <div class="card-body" style="padding: 0 16px 16px 16px;">
+                <div class="log-panel">
+                    <div class="log-content" id="log-content"></div>
                 </div>
             </div>
         </div>
     </div>
 
+    <!-- 别名编辑模态框 -->
+    <div class="modal-overlay" id="alias-modal">
+        <div class="modal">
+            <div class="modal-title">编辑群聊别名</div>
+            <input type="text" class="modal-input" id="alias-input" placeholder="输入新的别名...">
+            <div class="modal-actions">
+                <button class="btn" id="alias-cancel">取消</button>
+                <button class="btn btn-primary" id="alias-save">保存</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 复制成功提示 -->
+    <div class="copy-toast" id="copy-toast">已复制到剪贴板</div>
+
     <script>
-        // 元素引用
-        const connectionStatus = document.getElementById('connection-status');
-        const activeConnectionsEl = document.getElementById('active-connections');
-        const activeDanmakuEl = document.getElementById('active-danmaku');
-        const messageRateEl = document.getElementById('message-rate');
-        const groupSearch = document.getElementById('group-search');
-        const groupList = document.getElementById('group-list');
-        const refreshGroupsButton = document.getElementById('refresh-groups');
-        const applySelectedGroupsButton = document.getElementById('apply-selected-groups');
-        const clearAllListeningButton = document.getElementById('clear-all-listening');
-        const showRecentButton = document.getElementById('show-recent');
-        const groupFilterStatus = document.getElementById('group-filter-status');
-        const previewFrame = document.getElementById('preview-frame');
-        const openFullscreenButton = document.getElementById('open-fullscreen');
-        const clearDanmakuButton = document.getElementById('clear-danmaku');
-        const animationMethod = document.getElementById('animation-method');
-        const maxDanmakuInput = document.getElementById('max-danmaku');
-        const fontSizeInput = document.getElementById('font-size');
-        const applySettingsButton = document.getElementById('apply-settings');
-        const connectButton = document.getElementById('connect-ws');
-        const debugPanel = document.getElementById('debug-panel');
-        const tabButtons = document.querySelectorAll('.tab-button');
-        const favoriteGroupsList = document.getElementById('favoriteGroupsList'); // 假设有收藏列表
-        const danmakuSpeedSlider = document.getElementById('danmakuSpeed'); // 速度滑块引用
-        const speedValueLabel = document.getElementById('speedValue'); // 速度值显示标签引用
+    // ============================================================
+    // 主题管理
+    // ============================================================
+    
+    function initTheme() {
+        const saved = localStorage.getItem('theme');
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const theme = saved || (prefersDark ? 'dark' : 'light');
         
-        // 状态变量
-        let socket = null;
-        let isConnected = false;
-        let groupsData = [];
-        let filterEnabled = false;
-        let selectedGroupId = null;
-        let messageCount = 0;
-        let lastMessageTime = Date.now();
-        let messageRateInterval;
-        let latestMessages = new Set(); // 使用Set存储最近消息ID，防止重复
-        let isPreviewReady = false; // 预览框是否准备好接收消息
-        let currentTab = 'all'; // 当前选中的标签页
-        let allGroups = []; // 存储所有群组信息
-        let listenedSessionIds = new Set(); // Stores session_ids of groups this client is listening to
-        let lastFocusedGroupIdHint = null; // From backend, for UI pre-selection
-        
-        // 初始化
-        function init() {
-            // 设置预览框URL
-            updatePreviewFrame();
-            
-            // 启动消息速率计算
-            messageRateInterval = setInterval(updateMessageRate, 5000);
-            
-            // 加载群聊列表
-            loadGroups();
-            
-            // 连接WebSocket
-            connectWebSocket();
-            
-            // 添加调试信息
-            addDebugMessage("控制台初始化完成");
-            
-            // 监听预览框是否准备好接收消息
-            window.addEventListener('message', function(event) {
-                if (event.data && event.data.type === 'previewReady') {
-                    isPreviewReady = true;
-                    addDebugMessage("预览框准备就绪");
-                }
-                
-                if (event.data && event.data.type === 'danmakuStats') {
-                    activeDanmakuEl.textContent = event.data.count || 0;
-                }
-            });
+        if (theme === 'light') {
+            document.documentElement.setAttribute('data-theme', 'light');
         }
+    }
+    
+    function toggleTheme() {
+        const isLight = document.documentElement.getAttribute('data-theme') === 'light';
         
-        // 初始化主题
-        function initTheme() {
-            // 检查系统偏好
-            const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-            
-            // 检查本地存储中的设置
-            const savedTheme = localStorage.getItem('theme');
-            
-            // 如果有保存的主题设置，使用它，否则使用系统偏好
-            const isDarkMode = savedTheme ? savedTheme === 'dark' : prefersDark;
-            
-            // 设置复选框状态
-            themeSwitch.checked = isDarkMode;
-            
-            // 应用主题
-            if (isDarkMode) {
-                document.documentElement.setAttribute('data-theme', 'dark');
-            } else {
+        if (isLight) {
                 document.documentElement.removeAttribute('data-theme');
-            }
-            
-            // 监听系统主题变化
-            const darkModeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-            if (darkModeMediaQuery.addEventListener) {
-                darkModeMediaQuery.addEventListener('change', (e) => {
-                    if (localStorage.getItem('theme') === null) { // 只有在用户没有手动设置主题时才响应系统变化
-                        themeSwitch.checked = e.matches;
-                        document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
-                    }
-                });
-            }
-            
-            // 监听主题切换
-            themeSwitch.addEventListener('change', function() {
-                if (this.checked) {
-                    document.documentElement.setAttribute('data-theme', 'dark');
                     localStorage.setItem('theme', 'dark');
                 } else {
-                    document.documentElement.removeAttribute('data-theme');
+            document.documentElement.setAttribute('data-theme', 'light');
                     localStorage.setItem('theme', 'light');
                 }
-            });
+    }
+    
+    // 初始化主题
+    initTheme();
+    
+    // ============================================================
+    // 状态管理
+    // ============================================================
+    
+    const state = {
+        socket: null,
+        isConnected: false,
+        groups: [],
+        listenedIds: new Set(),
+        currentTab: 'all',
+        messageCount: 0,
+        lastCountTime: Date.now(),
+        isPreviewReady: false,
+        editingGroupId: null
+    };
+    
+    // ============================================================
+    // DOM 元素
+    // ============================================================
+    
+    const $ = (sel) => document.querySelector(sel);
+    const $$ = (sel) => document.querySelectorAll(sel);
+    
+    const dom = {
+        connectionBadge: $('#connection-badge'),
+        connectionText: $('#connection-text'),
+        statConnections: $('#stat-connections'),
+        statDanmaku: $('#stat-danmaku'),
+        statRate: $('#stat-rate'),
+        groupSearch: $('#group-search'),
+        groupList: $('#group-list'),
+        filterStatus: $('#filter-status'),
+        previewFrame: $('#preview-frame'),
+        danmakuUrl: $('#danmaku-url'),
+        speedSlider: $('#speed-slider'),
+        speedValue: $('#speed-value'),
+        maxDanmaku: $('#max-danmaku'),
+        fontSize: $('#font-size'),
+        logContent: $('#log-content'),
+        aliasModal: $('#alias-modal'),
+        aliasInput: $('#alias-input'),
+        copyToast: $('#copy-toast')
+    };
+    
+    // ============================================================
+    // 日志系统
+    // ============================================================
+    
+    function log(message, type = 'info') {
+        const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+        const entry = document.createElement('div');
+        entry.className = 'log-entry';
+        entry.innerHTML = `
+            <span class="log-time">${time}</span>
+            <span class="log-message ${type}">${message}</span>
+        `;
+        dom.logContent.appendChild(entry);
+        dom.logContent.scrollTop = dom.logContent.scrollHeight;
+        
+        while (dom.logContent.children.length > 100) {
+            dom.logContent.removeChild(dom.logContent.firstChild);
         }
+    }
+    
+    // ============================================================
+    // WebSocket
+    // ============================================================
+    
+    function connectWebSocket() {
+        if (state.socket) state.socket.close();
         
-        // 更新预览框
-        function updatePreviewFrame() {
-            const baseUrl = window.location.origin;
-            previewFrame.src = baseUrl;
-            document.getElementById('danmaku-url').value = baseUrl;
-            addDebugMessage(`预览框URL更新为: ${baseUrl}`);
+        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const url = `${protocol}//${location.host}/ws`;
+        
+        log(`连接到 ${url}...`);
+        state.socket = new WebSocket(url);
+        
+        state.socket.onopen = () => {
+            state.isConnected = true;
+            updateConnectionUI(true);
+            log('WebSocket 连接成功', 'success');
+        };
+        
+        state.socket.onclose = (e) => {
+            state.isConnected = false;
+            updateConnectionUI(false);
+            log(`连接已断开 (${e.code})`, 'warn');
+            setTimeout(connectWebSocket, 5000);
+        };
+        
+        state.socket.onerror = () => log('WebSocket 连接错误', 'error');
+        state.socket.onmessage = handleMessage;
+    }
+    
+    function handleMessage(event) {
+        try {
+            const data = JSON.parse(event.data);
             
-            // 重置预览框状态
-            isPreviewReady = false;
-        }
-        
-        // 在新窗口打开弹幕
-        openFullscreenButton.addEventListener('click', () => {
-            const baseUrl = window.location.origin;
-            window.open(baseUrl, '_blank', 'width=1280,height=720');
-            addDebugMessage(`在新窗口打开弹幕: ${baseUrl}`);
-        });
-        
-        // 清空弹幕
-        clearDanmakuButton.addEventListener('click', () => {
-            if (previewFrame.contentWindow) {
-                previewFrame.contentWindow.postMessage({action: 'clearDanmaku'}, '*');
-                addDebugMessage("已发送清空弹幕命令");
-                
-                // 清空最近消息记录
-                latestMessages.clear();
-            }
-        });
-        
-        // 应用设置
-        applySettingsButton.addEventListener('click', () => {
-            const settings = {
-                animationMethod: animationMethod.value,
-                maxDanmaku: parseInt(maxDanmakuInput.value),
-                fontSize: parseInt(fontSizeInput.value)
-            };
-            
-            if (previewFrame.contentWindow) {
-                previewFrame.contentWindow.postMessage({action: 'updateSettings', settings}, '*');
-                addDebugMessage(`已应用设置: ${JSON.stringify(settings)}`);
-            }
-            
-            // 如果有其他活跃的弹幕窗口，也发送设置
-            if (socket && socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({
-                    type: 'command',
-                    action: 'broadcast_settings',
-                    settings: settings
-                }));
-                addDebugMessage("已向所有连接的客户端广播设置");
-            }
-        });
-        
-        // 更新消息速率
-        function updateMessageRate() {
-            const now = Date.now();
-            const elapsed = (now - lastMessageTime) / 1000; // 秒
-            
-            if (elapsed > 0) {
-                const rate = Math.round((messageCount / elapsed) * 60); // 每分钟
-                messageRateEl.textContent = `${rate}/分钟`;
-                
-                // 重置计数器
-                messageCount = 0;
-                lastMessageTime = now;
-            }
-        }
-        
-        // 加载群聊列表
-        async function loadGroups() {
-            try {
-                groupList.innerHTML = '<div class="loading-indicator">加载中...</div>';
-                addDebugMessage("正在加载群聊列表...");
-                
-                const response = await fetch('/api/groups');
-                const data = await response.json();
-                
-                if (data.status === 'success') {
-                    groupsData = data.groups;
-                    
-                    if (groupsData.length === 0) {
-                        groupList.innerHTML = '<div class="empty-message">没有找到群聊</div>';
-                        addDebugMessage("未找到任何群聊");
-                        return;
+            switch (data.type) {
+                case 'connection':
+                    if (data.settings?.danmaku_speed) updateSpeedUI(data.settings.danmaku_speed);
+                    break;
+                case 'stats':
+                    dom.statConnections.textContent = data.connections || 0;
+                    break;
+                case 'danmaku':
+                    state.messageCount++;
+                    if (state.isPreviewReady) {
+                        dom.previewFrame.contentWindow?.postMessage({ action: 'newDanmaku', message: data }, '*');
                     }
-                    
-                    // Pre-check based on lastFocusedGroupIdHint if available and no groups are listened to yet
-                    if (lastFocusedGroupIdHint && listenedSessionIds.size === 0) {
-                        const hintGroup = groupsData.find(g => g.group_id === lastFocusedGroupIdHint);
-                        if (hintGroup) {
-                            listenedSessionIds.add(hintGroup.id);
-                            addDebugMessage(`根据后端提示，预选群组: ${hintGroup.group_id} (session ID: ${hintGroup.id})`);
+                    break;
+                case 'broadcast_filter_update':
+                    log(`过滤器更新: ${data.filter_enabled ? '启用' : '禁用'}`);
+                    break;
+                case 'setting_update':
+                    if (data.key === 'danmaku_speed') updateSpeedUI(data.value);
+                    break;
+                case 'command_response':
+                    log(`${data.action}: ${data.message}`, data.status === 'success' ? 'success' : 'error');
+                    break;
+                case 'last_focused_group_hint':
+                    if (data.group_id && state.listenedIds.size === 0) {
+                        const group = state.groups.find(g => g.group_id === data.group_id);
+                        if (group) {
+                            state.listenedIds.add(group.id);
+                            renderGroups();
                         }
                     }
-                    
-                    // 渲染群聊列表
-                    renderGroupList();
-                    
-                    addDebugMessage(`成功加载 ${groupsData.length} 个群聊`);
-                } else {
-                    groupList.innerHTML = '<div class="error-message">加载失败</div>';
-                    addDebugMessage(`加载群聊列表失败: ${data.message}`);
-                }
-            } catch (error) {
-                groupList.innerHTML = '<div class="error-message">加载失败</div>';
-                addDebugMessage(`加载群聊列表错误: ${error.message}`);
+                    break;
             }
+        } catch (e) {
+            log(`消息解析错误: ${e.message}`, 'error');
+        }
+    }
+    
+    function send(data) {
+        if (state.socket?.readyState === WebSocket.OPEN) {
+            state.socket.send(JSON.stringify(data));
+        }
+    }
+    
+    function updateConnectionUI(connected) {
+        dom.connectionBadge.classList.toggle('connected', connected);
+        dom.connectionText.textContent = connected ? '已连接' : '未连接';
+    }
+    
+    // ============================================================
+    // 群组管理
+    // ============================================================
+    
+    async function loadGroups() {
+        dom.groupList.innerHTML = '<div class="loading-spinner"></div>';
+        
+        try {
+            const res = await fetch('/api/groups');
+            const data = await res.json();
+            
+            if (data.status === 'success') {
+                state.groups = data.groups;
+                renderGroups();
+                log(`加载了 ${data.groups.length} 个群聊`, 'success');
+            } else {
+                throw new Error(data.message);
+            }
+        } catch (e) {
+            dom.groupList.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div>加载失败: ${e.message}</div></div>`;
+            log(`加载群聊失败: ${e.message}`, 'error');
+        }
+    }
+    
+    function renderGroups() {
+        let groups = [...state.groups];
+        
+        if (state.currentTab === 'favorites') {
+            groups = groups.filter(g => g.is_favorite);
         }
         
-        // 渲染群聊列表
-        function renderGroupList() {
-            // 过滤群聊列表
-            let filteredGroups = [...groupsData];
-            
-            // 根据当前标签页过滤
-            if (currentTab === 'favorites') {
-                filteredGroups = filteredGroups.filter(group => group.is_favorite);
-            }
-            
-            // 根据搜索关键词过滤
-            const searchTerm = groupSearch.value.toLowerCase();
-            if (searchTerm) {
-                filteredGroups = filteredGroups.filter(group => {
-                    const groupId = String(group.group_id).toLowerCase();
-                    const alias = (group.alias || '').toLowerCase();
-                    return groupId.includes(searchTerm) || alias.includes(searchTerm);
-                });
-            }
-            
-            // 清空列表
-            groupList.innerHTML = '';
-            
-            if (filteredGroups.length === 0) {
-                groupList.innerHTML = '<div class="empty-message">没有找到匹配的群聊</div>';
-                return;
-            }
-            
-            // 将常用群聊置顶
-            filteredGroups.sort((a, b) => {
-                // 首先按照是否为常用群聊排序（常用的排在前面）
-                if (a.is_favorite !== b.is_favorite) {
-                    return a.is_favorite ? -1 : 1;
-                }
-                // 如果常用状态相同，则按照ID排序
+        const search = dom.groupSearch.value.toLowerCase();
+        if (search) {
+            groups = groups.filter(g => 
+                g.group_id.toLowerCase().includes(search) ||
+                (g.alias || '').toLowerCase().includes(search)
+            );
+        }
+        
+        groups.sort((a, b) => {
+            if (a.is_favorite !== b.is_favorite) return a.is_favorite ? -1 : 1;
                 return parseInt(a.id) - parseInt(b.id);
             });
             
-            // 渲染群聊列表
-            filteredGroups.forEach(group => {
-                const groupItem = document.createElement('div');
-                groupItem.className = 'group-item';
-                // Add 'listening' class if this group is in listenedSessionIds
-                if (listenedSessionIds.has(group.id)) {
-                    groupItem.classList.add('listening');
-                }
-                
-                const displayName = group.alias ? `${group.alias} (${group.group_id})` : `群 ${group.group_id}`;
-
-                // Checkbox for multi-select
-                const checkbox = document.createElement('input');
-                checkbox.type = 'checkbox';
-                checkbox.id = `group-checkbox-${group.id}`;
-                checkbox.value = group.id;
-                checkbox.checked = listenedSessionIds.has(group.id);
-                checkbox.addEventListener('change', () => {
-                    if (checkbox.checked) {
-                        listenedSessionIds.add(group.id);
-                    } else {
-                        listenedSessionIds.delete(group.id);
-                    }
-                    // No immediate send on checkbox change, user clicks "Apply"
-                    // updateFilterStatus(); // Update status immediately or on apply?
-                });
-
-                const groupInfo = document.createElement('label'); // Use label for checkbox
-                groupInfo.htmlFor = checkbox.id; 
-                groupInfo.className = 'group-info';
-                groupInfo.innerHTML = `
+        if (groups.length === 0) {
+            dom.groupList.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><div>没有找到群聊</div></div>`;
+            return;
+        }
+        
+        dom.groupList.innerHTML = groups.map(g => {
+            const isListening = state.listenedIds.has(g.id);
+            const displayName = g.alias || `群 ${g.group_id}`;
+            
+            return `
+                <div class="group-item ${isListening ? 'listening' : ''}" data-id="${g.id}">
+                    <input type="checkbox" class="group-checkbox" ${isListening ? 'checked' : ''}>
+                    <div class="group-info">
                     <div class="group-name">${displayName}</div>
+                        ${g.alias ? `<div class="group-id">${g.group_id}</div>` : ''}
+                    </div>
                     <div class="group-actions">
-                        <button class="action-button edit-alias" data-groupid="${group.group_id}" data-alias="${group.alias || ''}" title="编辑别名">✏️</button>
-                        <button class="action-button toggle-favorite" data-sessionid="${group.id}" data-isfavorite="${group.is_favorite}" title="${group.is_favorite ? '取消常用' : '设为常用'}">${group.is_favorite ? '★' : '☆'}</button>
+                        <button class="icon-btn edit-alias" data-groupid="${g.group_id}" data-alias="${g.alias || ''}" title="编辑别名">✏️</button>
+                        <button class="icon-btn favorite ${g.is_favorite ? 'active' : ''}" data-id="${g.id}" title="${g.is_favorite ? '取消收藏' : '收藏'}">
+                            ${g.is_favorite ? '★' : '☆'}
+                        </button>
+                    </div>
                     </div>
                 `;
-                
-                groupItem.appendChild(checkbox);
-                groupItem.appendChild(groupInfo);
-
-                // Edit alias button
-                groupItem.querySelector('.edit-alias').addEventListener('click', (e) => {
-                    e.preventDefault(); // Prevent label click from toggling checkbox
-                    const currentAlias = e.target.closest('.action-button').dataset.alias;
-                    const targetGroupId = e.target.closest('.action-button').dataset.groupid;
-                    const newAlias = prompt('请输入群聊别名:', currentAlias);
-                    if (newAlias !== null) {
-                        setGroupAlias(targetGroupId, newAlias);
-                    }
-                });
-
-                // Toggle favorite button
-                groupItem.querySelector('.toggle-favorite').addEventListener('click', (e) => {
-                    e.preventDefault(); // Prevent label click from toggling checkbox
-                    const sessionId = e.target.closest('.action-button').dataset.sessionid;
-                    const isFavorite = e.target.closest('.action-button').dataset.isfavorite === 'true';
-                    toggleFavoriteGroup(sessionId, !isFavorite);
-                });
-                
-                groupList.appendChild(groupItem);
-            });
-            updateFilterStatus(); // Update status after rendering
-        }
+        }).join('');
         
-        // 监听群聊搜索
-        groupSearch.addEventListener('input', filterGroups);
-        
-        // 监听标签页切换
-        tabButtons.forEach(button => {
-            button.addEventListener('click', function() {
-                // 移除所有标签页的active类
-                tabButtons.forEach(btn => btn.classList.remove('active'));
-                // 添加当前标签页的active类
-                this.classList.add('active');
-                // 更新当前标签页
-                currentTab = this.dataset.tab;
-                // 重新渲染群聊列表
-                renderGroupList();
+        $$('.group-checkbox').forEach(cb => {
+            cb.addEventListener('change', (e) => {
+                const id = e.target.closest('.group-item').dataset.id;
+                if (e.target.checked) state.listenedIds.add(id);
+                else state.listenedIds.delete(id);
+                updateFilterStatus();
             });
         });
         
-        // 过滤群聊列表
-        function filterGroups() {
-            renderGroupList();
-        }
+        $$('.edit-alias').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                showAliasModal(btn.dataset.groupid, btn.dataset.alias);
+            });
+        });
         
-        // 显示最近消息
-        async function showRecentMessages() {
-            if (listenedSessionIds.size === 0) {
-                alert('请至少选择并应用一个群聊进行监听。');
-                return;
-            }
-            // For simplicity, show recent messages for the *first* group in the listened set
-            const firstSelectedSessionId = listenedSessionIds.values().next().value;
-            if (firstSelectedSessionId) {
-                showRecentMessagesForGroup(firstSelectedSessionId);
-            } else {
-                alert('没有选中的群聊来显示最近消息。');
-            }
-        }
+        $$('.favorite').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const group = state.groups.find(g => g.id === btn.dataset.id);
+                if (group) toggleFavorite(btn.dataset.id, !group.is_favorite);
+            });
+        });
         
-        // Renamed original showRecentMessages to avoid conflict and specify group
-        async function showRecentMessagesForGroup(groupSessionId) { 
-            try {
-                addDebugMessage(`正在获取群 ${groupSessionId} 的最近消息...`);
-                
-                const response = await fetch(`/api/recent-messages/${groupSessionId}`);
-                const data = await response.json();
-                
-                if (data.status === 'success') {
-                    if (data.messages.length === 0) {
-                        alert('该群没有最近消息');
-                        groupFilterStatus.textContent = '该群没有最近消息';
-                        addDebugMessage("该群没有最近消息");
+        updateFilterStatus();
+    }
+    
+    function updateFilterStatus() {
+        const count = state.listenedIds.size;
+        
+        if (count === 0) {
+            dom.filterStatus.className = 'status-bar';
+            dom.filterStatus.innerHTML = '<span class="status-dot"></span><span>未选择任何群聊</span>';
                     } else {
-                        groupFilterStatus.textContent = `已显示群 ${data.messages[0].group_id} 的最近 ${data.messages.length} 条消息`;
-                        addDebugMessage(`成功获取 ${data.messages.length} 条最近消息`);
-                        
-                        // 清空最近消息记录
-                        latestMessages.clear();
-                        
-                        // 向预览框发送消息
-                        if (isPreviewReady && previewFrame.contentWindow) {
-                            previewFrame.contentWindow.postMessage({
-                                action: 'showRecentMessages',
-                                messages: data.messages
-                            }, '*');
-                        } else {
-                            // 如果预览框还没准备好，等待一段时间再发送
-                            setTimeout(() => {
-                                if (previewFrame.contentWindow) {
-                                    previewFrame.contentWindow.postMessage({
-                                        action: 'showRecentMessages',
-                                        messages: data.messages
-                                    }, '*');
-                                }
-                            }, 1000);
-                        }
-                        
-                        // 记录这些消息的ID，防止重复
-                        data.messages.forEach(msg => {
-                            if (msg.message_id) {
-                                latestMessages.add(msg.message_id);
-                            }
-                        });
-                    }
-                } else {
-                    alert('获取最近消息失败: ' + data.message);
-                    groupFilterStatus.textContent = '获取最近消息失败: ' + data.message;
-                    addDebugMessage(`获取最近消息失败: ${data.message}`);
-                }
-            } catch (error) {
-                addDebugMessage(`获取最近消息错误: ${error.message}`);
-                alert('获取最近消息出错，详情请查看控制台');
-                groupFilterStatus.textContent = '获取最近消息出错';
-            }
-        }
-        
-        // 更新过滤状态显示
-        function updateFilterStatus() {
-            if (listenedSessionIds.size === 0) {
-                groupFilterStatus.textContent = '当前未监听任何群聊';
-                groupFilterStatus.style.color = 'var(--muted-color)';
-            } else {
-                const listenedNames = Array.from(listenedSessionIds).map(sessionId => {
-                    const group = groupsData.find(g => g.id === sessionId);
-                    return group ? (group.alias || `群${group.group_id}`) : `未知群(${sessionId})`;
+            const names = Array.from(state.listenedIds).map(id => {
+                const g = state.groups.find(g => g.id === id);
+                return g ? (g.alias || `群${g.group_id}`) : id;
                 }).join(', ');
-                groupFilterStatus.textContent = `正在监听: ${listenedNames}`;
-                groupFilterStatus.style.color = 'var(--primary-color)';
-            }
+            
+            dom.filterStatus.className = 'status-bar active';
+            dom.filterStatus.innerHTML = `<span class="status-dot"></span><span>正在监听: ${names}</span>`;
+        }
+    }
+    
+    async function applyGroups() {
+        const groups = Array.from(state.listenedIds);
+        
+        send({ type: 'command', action: 'set_groups', filter_enabled: groups.length > 0, groups });
+        
+        if (state.isPreviewReady) {
+            const groupIds = groups.map(sid => {
+                const g = state.groups.find(g => g.id === sid);
+                return g?.group_id;
+            }).filter(Boolean);
+            
+            dom.previewFrame.contentWindow?.postMessage({
+                    action: 'setFilter',
+                enabled: groupIds.length > 0,
+                allowed_groups: groupIds
+                }, '*');
         }
         
-        // 发送过滤设置到服务器
-        function sendFilterSettings() {
-            if (!socket || socket.readyState !== WebSocket.OPEN) {
-                addDebugMessage('WebSocket未连接，无法发送过滤设置');
-                return;
-            }
+        renderGroups();
+    }
+    
+    async function toggleFavorite(id, isFavorite) {
+        try {
+            const res = await fetch('/api/favorite-group', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ group_id: id, is_favorite: isFavorite })
+            });
             
-            socket.send(JSON.stringify({
-                type: 'command',
-                action: 'set_active_group',
-                group_id: selectedGroupId
-            }));
-            
-            updateFilterStatus();
-            updatePreviewFrame();
-            addDebugMessage(`发送过滤设置: 启用=${filterEnabled}, 群ID=${selectedGroupId || '无'}`);
-        }
-        
-        // 启用监听
-        applySelectedGroupsButton.addEventListener('click', () => {
-            if (!socket || socket.readyState !== WebSocket.OPEN) {
-                addDebugMessage('WebSocket未连接，无法应用群组监听');
-                alert('WebSocket未连接，请先连接。');
-                return;
-            }
-            const groupsToListen = Array.from(listenedSessionIds);
-            socket.send(JSON.stringify({
-                type: 'command',
-                action: 'set_groups',
-                filter_enabled: groupsToListen.length > 0, // Enable filter if any group is selected
-                groups: groupsToListen // Send array of session_ids
-            }));
-            addDebugMessage(`发送监听群组命令: ${JSON.stringify(groupsToListen)}`);
-            // The backend will respond, and the UI might update based on that response or implicitly here
-            renderGroupList(); // Re-render to reflect "listening" state potentially, or wait for command response
-            updateFilterStatus();
-
-            // Update preview frame
-            if (isPreviewReady && previewFrame.contentWindow) {
-                const actualGroupIdsToFilter = groupsToListen.map(sid => {
-                    const group = groupsData.find(g => g.id === sid);
-                    return group ? group.group_id : null;
-                }).filter(gid => gid !== null);
-
-                previewFrame.contentWindow.postMessage({
-                    action: 'setFilter',
-                    enabled: actualGroupIdsToFilter.length > 0,
-                    // groupId: actualGroupIdsToFilter.length > 0 ? actualGroupIdsToFilter[0] : null, // Old single group logic
-                    allowed_groups: actualGroupIdsToFilter // Send array of actual group_ids
-                }, '*');
-                addDebugMessage(`已向预览框发送过滤设置: 启用=${actualGroupIdsToFilter.length > 0}, 群列表=${JSON.stringify(actualGroupIdsToFilter)}`);
-            }
-        });
-
-        clearAllListeningButton.addEventListener('click', () => {
-            listenedSessionIds.clear();
-            if (socket && socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({
-                    type: 'command',
-                    action: 'set_groups',
-                    filter_enabled: false,
-                    groups: [] 
-                }));
-                addDebugMessage('发送命令: 清除所有群组监听');
-            }
-            renderGroupList(); // Update UI to uncheck all
-            updateFilterStatus();
-
-            // Update preview frame to listen to nothing (or all, depending on danmaku.html default)
-            if (isPreviewReady && previewFrame.contentWindow) {
-                previewFrame.contentWindow.postMessage({
-                    action: 'setFilter',
-                    enabled: false,
-                    allowed_groups: [] 
-                }, '*');
-                 addDebugMessage('已向预览框发送清除过滤设置');
-            }
-        });
-        
-        // 刷新群列表
-        refreshGroupsButton.addEventListener('click', loadGroups);
-        
-        // 复制链接按钮
-        document.getElementById('copy-url').addEventListener('click', async () => {
-            const urlInput = document.getElementById('danmaku-url');
-            const text = urlInput.value;
-            let success = false;
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                try {
-                    await navigator.clipboard.writeText(text);
-                    success = true;
-                } catch (e) {
-                    success = false;
+            const data = await res.json();
+            if (data.status === 'success') {
+                const group = state.groups.find(g => g.id === id);
+                if (group) {
+                    group.is_favorite = isFavorite;
+                    renderGroups();
+                    log(`${isFavorite ? '收藏' : '取消收藏'}成功`, 'success');
                 }
             }
-            if (!success) {
-                // 回退方案
-                urlInput.select();
-                success = document.execCommand('copy');
-            }
-            // 显示复制提示
-            const copyStatus = document.getElementById('copy-status');
-            copyStatus.style.display = 'block';
-            copyStatus.textContent = success ? '链接已复制到剪贴板' : '复制失败，请手动复制';
-            setTimeout(() => {
-                copyStatus.style.display = 'none';
-            }, 2000);
-            addDebugMessage(success ? '弹幕链接已复制到剪贴板' : '复制失败');
-        });
-        
-        // 添加调试信息
-        function addDebugMessage(message) {
-            const timestamp = new Date().toLocaleTimeString();
-            const msgElement = document.createElement('div');
-            msgElement.className = 'debug-message';
-            msgElement.innerHTML = `<span class="timestamp">[${timestamp}]</span><span>${message}</span>`;
-            debugPanel.appendChild(msgElement);
-            
-            // 只保留最新的50条消息
-            while (debugPanel.children.length > 50) {
-                debugPanel.removeChild(debugPanel.firstChild);
-            }
-            
-            // 自动滚动到底部
-            debugPanel.scrollTop = debugPanel.scrollHeight;
+        } catch (e) {
+            log(`操作失败: ${e.message}`, 'error');
         }
+    }
+    
+    // ============================================================
+    // 别名编辑
+    // ============================================================
+    
+    function showAliasModal(groupId, currentAlias) {
+        state.editingGroupId = groupId;
+        dom.aliasInput.value = currentAlias;
+        dom.aliasModal.classList.add('show');
+        dom.aliasInput.focus();
+    }
+    
+    function hideAliasModal() {
+        dom.aliasModal.classList.remove('show');
+        state.editingGroupId = null;
+    }
+    
+    async function saveAlias() {
+        const alias = dom.aliasInput.value.trim();
         
-        // 设置群聊别名
-        async function setGroupAlias(groupId, alias) {
-            try {
-                addDebugMessage(`正在设置群 ${groupId} 的别名为: ${alias}`);
-                
-                const response = await fetch('/api/group-alias', {
+        try {
+            const res = await fetch('/api/group-alias', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        group_id: groupId,
-                        alias: alias
-                    })
-                });
-                
-                const data = await response.json();
-                
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ group_id: state.editingGroupId, alias })
+            });
+            
+            const data = await res.json();
                 if (data.status === 'success') {
-                    addDebugMessage(`群聊别名设置成功: ${groupId} -> ${alias}`);
-                    // 重新加载群聊列表以更新显示
+                log(`别名已更新`, 'success');
+                hideAliasModal();
                     loadGroups();
+            }
+        } catch (e) {
+            log(`保存别名失败: ${e.message}`, 'error');
+        }
+    }
+    
+    // ============================================================
+    // 最近消息
+    // ============================================================
+    
+    async function showRecentMessages() {
+        if (state.listenedIds.size === 0) {
+            log('请先选择要监听的群聊', 'warn');
+            return;
+        }
+        
+        const firstId = state.listenedIds.values().next().value;
+        
+        try {
+            const res = await fetch(`/api/recent-messages/${firstId}`);
+            const data = await res.json();
+            
+            if (data.status === 'success' && data.messages.length > 0) {
+                if (state.isPreviewReady) {
+                    dom.previewFrame.contentWindow?.postMessage({
+                        action: 'showRecentMessages',
+                        messages: data.messages
+                    }, '*');
+                }
+                log(`显示了 ${data.messages.length} 条最近消息`, 'success');
                 } else {
-                    addDebugMessage(`设置别名失败: ${data.message}`);
-                    alert('设置别名失败: ' + data.message);
-                }
-            } catch (error) {
-                addDebugMessage(`设置别名错误: ${error.message}`);
-                alert('设置别名出错，详情请查看控制台');
+                log('该群没有最近消息', 'warn');
             }
+        } catch (e) {
+            log(`获取消息失败: ${e.message}`, 'error');
+        }
+    }
+    
+    // ============================================================
+    // 设置
+    // ============================================================
+    
+    function updateSpeedUI(speed) {
+        dom.speedSlider.value = speed;
+        dom.speedValue.textContent = `${speed}s`;
+    }
+    
+    function applySettings() {
+        const speed = parseInt(dom.speedSlider.value);
+        const maxDanmaku = parseInt(dom.maxDanmaku.value);
+        const fontSize = parseInt(dom.fontSize.value);
+        
+        send({ type: 'command', action: 'set_danmaku_speed', speed });
+        send({ type: 'command', action: 'broadcast_settings', settings: { maxDanmaku, fontSize } });
+        
+        if (state.isPreviewReady) {
+            dom.previewFrame.contentWindow?.postMessage({
+                action: 'updateSettings',
+                settings: { maxDanmaku, fontSize }
+            }, '*');
         }
         
-        // 设置群聊为常用
-        async function toggleFavoriteGroup(groupId, isFavorite) {
-            try {
-                addDebugMessage(`${isFavorite ? '设置' : '取消'}常用群聊: ${groupId}`);
-                
-                const response = await fetch('/api/favorite-group', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        group_id: groupId,
-                        is_favorite: isFavorite
-                    })
-                });
-                
-                const data = await response.json();
-                
-                if (data.status === 'success') {
-                    // 更新本地数据
-                    const group = groupsData.find(g => g.id === groupId);
-                    if (group) {
-                        group.is_favorite = isFavorite;
-                        addDebugMessage(`成功${isFavorite ? '设置' : '取消'}常用群聊`);
-                        
-                        // 重新渲染群聊列表以实现置顶效果
-                        renderGroupList();
-                    }
-                } else {
-                    addDebugMessage(`${isFavorite ? '设置' : '取消'}常用群聊失败: ${data.message}`);
-                }
-            } catch (error) {
-                addDebugMessage(`${isFavorite ? '设置' : '取消'}常用群聊错误: ${error.message}`);
-            }
+        log('设置已应用', 'success');
+    }
+    
+    // ============================================================
+    // 预览
+    // ============================================================
+    
+    function initPreview() {
+        const baseUrl = location.origin;
+        dom.previewFrame.src = baseUrl;
+        dom.danmakuUrl.value = baseUrl;
+    }
+    
+    function copyUrl() {
+        navigator.clipboard.writeText(dom.danmakuUrl.value).then(() => {
+            dom.copyToast.classList.add('show');
+            setTimeout(() => dom.copyToast.classList.remove('show'), 2000);
+            log('链接已复制', 'success');
+        });
+    }
+    
+    // ============================================================
+    // 消息速率
+    // ============================================================
+    
+    function updateMessageRate() {
+        const now = Date.now();
+        const elapsed = (now - state.lastCountTime) / 1000;
+        
+        if (elapsed > 0) {
+            const rate = Math.round((state.messageCount / elapsed) * 60);
+            dom.statRate.textContent = rate;
+            state.messageCount = 0;
+            state.lastCountTime = now;
         }
+    }
+    
+    // ============================================================
+    // 事件绑定
+    // ============================================================
+    
+    function bindEvents() {
+        // 主题切换
+        $('#theme-toggle').addEventListener('click', toggleTheme);
         
-        // WebSocket连接
-        function connectWebSocket() {
-            // 关闭现有连接
-            if (socket) {
-                socket.close();
-            }
-            
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws`;
-            
-            addDebugMessage(`正在连接到 ${wsUrl}`);
-            
-            socket = new WebSocket(wsUrl);
-            
-            socket.onopen = function(e) {
-                isConnected = true;
-                connectionStatus.textContent = "已连接";
-                connectionStatus.classList.add('connected');
-                
-                addDebugMessage("WebSocket连接成功");
-                
-                // 连接后发送当前的过滤设置
-                if (filterEnabled && selectedGroupId) {
-                    sendFilterSettings();
-                }
-            };
-            
-            socket.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    
-                    // 处理不同类型的消息
-                    if (data.type === 'connection') {
-                        addDebugMessage(`服务器消息: ${data.message}`);
-                        // Initial settings might include listened groups for this connection if session is restored by backend
-                        if (data.settings && data.settings.listened_groups_this_connection) {
-                            listenedSessionIds = new Set(data.settings.listened_groups_this_connection);
-                            renderGroupList(); // Reflect this state
-                        }
-                        if (data.settings && typeof data.settings.danmaku_speed === 'number') {
-                            updateSpeedUI(data.settings.danmaku_speed);
-                        }
-                    } else if (data.type === 'stats') {
-                        // 更新统计信息
-                        activeConnectionsEl.textContent = data.connections || 0;
-                        activeDanmakuEl.textContent = messageCount || 0;
-                        messageRateEl.textContent = (messageCount / 5).toFixed(2);
-                    } else if (data.type === 'danmaku') {
-                        // 收到新弹幕消息
-                        messageCount++;
-                        lastMessageTime = Date.now();
-                        
-                        // 检查是否已经显示过这条消息（防止重复）
-                        if (data.message_id && !latestMessages.has(data.message_id)) {
-                            latestMessages.add(data.message_id);
-                            
-                            // 向预览框发送消息
-                            if (isPreviewReady && previewFrame.contentWindow) {
-                                previewFrame.contentWindow.postMessage({
-                                    action: 'newDanmaku',
-                                    message: data
-                                }, '*');
-                                addDebugMessage(`已向预览框发送弹幕: ${data.content.substring(0, 15)}...`);
-                            }
-                        }
-                    } else if (data.type === 'active_group') {
-                        // 更新活跃群组
-                        addDebugMessage(`活跃群组已更新: ${data.group_id}`);
-                        
-                        // 如果预览框已准备好，向预览框发送过滤设置
-                        if (isPreviewReady && previewFrame.contentWindow) {
-                            previewFrame.contentWindow.postMessage({
-                                action: 'setFilter',
-                                enabled: true,
-                                groupId: data.group_id
-                            }, '*');
-                            addDebugMessage(`已向预览框发送过滤设置: 启用=true, 群ID=${data.group_id}`);
-                        }
-                    } else if (data.type === 'command_response') {
-                        // 处理命令响应
-                        addDebugMessage(`命令响应: ${data.action} - ${data.message}`);
-                        if (data.debug_info) {
-                            addDebugMessage(`调试信息: ${JSON.stringify(data.debug_info)}`);
-                        }
-                    } else if (data.type === 'setting_update') { // 处理设置更新广播
-                        if (data.key === 'danmaku_speed') {
-                            updateSpeedUI(data.value); // 更新速度滑块
-                        }
-                    } else if (data.type === 'last_focused_group_hint') {
-                        lastFocusedGroupIdHint = data.group_id;
-                        addDebugMessage(`收到后端上次聚焦群组提示: ${lastFocusedGroupIdHint}`);
-                        // If groups are already loaded, try to pre-select
-                        if (groupsData.length > 0 && listenedSessionIds.size === 0) {
-                             const hintGroup = groupsData.find(g => g.group_id === lastFocusedGroupIdHint);
-                             if (hintGroup) {
-                                 listenedSessionIds.add(hintGroup.id);
-                                 renderGroupList(); 
-                             }
-                        }
-                    }
-                } catch (error) {
-                    addDebugMessage(`处理WebSocket消息错误: ${error.message}`);
-                }
-            };
-            
-            socket.onclose = function(event) {
-                if (event.wasClean) {
-                    addDebugMessage(`连接已关闭: ${event.reason || '无原因'}`);
-                } else {
-                    addDebugMessage("连接意外中断");
-                }
-                isConnected = false;
-                connectionStatus.textContent = "已断开";
-                connectionStatus.classList.remove('connected');
-                
-                // 5秒后自动尝试重连
-                setTimeout(connectWebSocket, 5000);
-            };
-            
-            socket.onerror = function(error) {
-                addDebugMessage("WebSocket错误");
-                connectionStatus.textContent = "连接错误";
-                connectionStatus.classList.remove('connected');
-            };
-        }
-        
-        // 重新连接按钮
-        connectButton.addEventListener('click', connectWebSocket);
-        
-        // 更新速度滑块和标签的函数
-        function updateSpeedUI(speed) {
-            if (danmakuSpeedSlider && speedValueLabel) {
-                danmakuSpeedSlider.value = speed;
-                speedValueLabel.textContent = speed;
-                addDebugMessage(`弹幕速度更新为: ${speed} 秒`);
-            }
-        }
-        
-        // 添加速度滑块的事件监听
-        if (danmakuSpeedSlider && speedValueLabel) {
-            danmakuSpeedSlider.addEventListener('input', () => {
-                speedValueLabel.textContent = danmakuSpeedSlider.value; // 实时更新标签
+        // 标签切换
+        $$('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                $$('.tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                state.currentTab = tab.dataset.tab;
+                renderGroups();
             });
-
-            danmakuSpeedSlider.addEventListener('change', () => { // 在释放滑块时发送命令
-                const newSpeed = parseInt(danmakuSpeedSlider.value);
-                if (socket && socket.readyState === WebSocket.OPEN) {
-                    const command = {
-                        type: "command",
-                        action: "set_danmaku_speed",
-                        speed: newSpeed
-                    };
-                    socket.send(JSON.stringify(command));
-                    addDebugMessage(`发送命令: 设置弹幕速度为 ${newSpeed}`);
-                } else {
-                    addDebugMessage("WebSocket 未连接，无法发送速度设置");
+        });
+        
+        dom.groupSearch.addEventListener('input', renderGroups);
+        $('#refresh-groups').addEventListener('click', loadGroups);
+        $('#apply-groups').addEventListener('click', applyGroups);
+        
+        $('#clear-listening').addEventListener('click', () => {
+            state.listenedIds.clear();
+            send({ type: 'command', action: 'set_groups', filter_enabled: false, groups: [] });
+            renderGroups();
+            log('已清除所有监听', 'success');
+        });
+        
+        $('#show-recent').addEventListener('click', showRecentMessages);
+        
+        $('#clear-danmaku').addEventListener('click', () => {
+            dom.previewFrame.contentWindow?.postMessage({ action: 'clearDanmaku' }, '*');
+            log('已清空弹幕', 'success');
+        });
+        
+        $('#open-fullscreen').addEventListener('click', () => {
+            window.open(location.origin, '_blank', 'width=1280,height=720');
+        });
+        
+        $('#copy-url').addEventListener('click', copyUrl);
+        
+        dom.speedSlider.addEventListener('input', () => {
+            dom.speedValue.textContent = `${dom.speedSlider.value}s`;
+        });
+        
+        dom.speedSlider.addEventListener('change', () => {
+            send({ type: 'command', action: 'set_danmaku_speed', speed: parseInt(dom.speedSlider.value) });
+        });
+        
+        $('#apply-settings').addEventListener('click', applySettings);
+        $('#reconnect-ws').addEventListener('click', connectWebSocket);
+        $('#clear-logs').addEventListener('click', () => {
+            dom.logContent.innerHTML = '';
+            log('日志已清空');
+        });
+        
+        $('#alias-cancel').addEventListener('click', hideAliasModal);
+        $('#alias-save').addEventListener('click', saveAlias);
+        dom.aliasModal.addEventListener('click', (e) => {
+            if (e.target === dom.aliasModal) hideAliasModal();
+        });
+        dom.aliasInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') saveAlias();
+            if (e.key === 'Escape') hideAliasModal();
+        });
+        
+        window.addEventListener('message', (e) => {
+            if (e.data?.type === 'previewReady') {
+                state.isPreviewReady = true;
+                log('预览框已就绪', 'success');
+            }
+            if (e.data?.type === 'danmakuStats') {
+                dom.statDanmaku.textContent = e.data.count || 0;
                 }
             });
         }
         
+    // ============================================================
         // 初始化
-        init();
+    // ============================================================
+    
+    function init() {
+        log('控制台初始化...');
+        initPreview();
+        bindEvents();
+        loadGroups();
+        connectWebSocket();
+        setInterval(updateMessageRate, 5000);
+        log('控制台就绪', 'success');
+    }
+    
+    document.addEventListener('DOMContentLoaded', init);
     </script>
 </body>
 </html> 

@@ -5,11 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>群聊弹幕</title>
     <style>
-        :root {
-            --danmaku-font-size: 50px;
-            --danmaku-duration: 10s;
-        }
-        
         * {
             margin: 0;
             padding: 0;
@@ -18,568 +13,661 @@
         
         body {
             background-color: transparent;
-            color: white;
             overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', 'Helvetica Neue', Ubuntu, 'Noto Sans', 'Source Han Sans CN', 'Source Han Sans SC', sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 
+                         'Segoe UI', 'Helvetica Neue', Ubuntu, 'Noto Sans', sans-serif;
         }
         
-        #container {
-            position: relative;
+        #danmaku-canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
             width: 100vw;
             height: 100vh;
-            overflow: hidden;
-        }
-        
-        .danmaku {
-            position: absolute;
-            white-space: nowrap;
-            font-size: var(--danmaku-font-size);
-            font-weight: bold;
-            text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000;
-            will-change: transform, left;
-            user-select: none;
-            z-index: 10;
-            -webkit-backface-visibility: hidden;
-            backface-visibility: hidden;
-            transform: translateZ(0);
             pointer-events: none;
-            animation: danmaku-move var(--danmaku-duration) linear;
         }
         
-        @keyframes danmaku-move {
-            from {
-                transform: translateX(100vw);
-            }
-            to {
-                transform: translateX(-100%);
-            }
-        }
-        
-        #debug-info {
+        #debug-panel {
             position: fixed;
             bottom: 10px;
             left: 10px;
-            font-size: 14px;
-            background-color: rgba(0, 0, 0, 0.7);
-            padding: 5px 10px;
-            border-radius: 5px;
-            z-index: 100;
+            background: rgba(0, 0, 0, 0.8);
+            color: #0f0;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 12px;
+            padding: 10px 15px;
+            border-radius: 6px;
+            z-index: 1000;
             display: none;
+            min-width: 200px;
         }
+        
+        #debug-panel.visible { display: block; }
+        
+        .debug-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 3px 0;
+        }
+        
+        .debug-label { color: #888; }
+        .debug-value { color: #0f0; font-weight: bold; }
+        .debug-value.warning { color: #ff0; }
+        .debug-value.error { color: #f00; }
     </style>
 </head>
 <body>
-    <div id="container"></div>
-    <div id="debug-info">弹幕数: <span id="danmaku-count">0</span></div>
+    <canvas id="danmaku-canvas"></canvas>
     
+    <div id="debug-panel">
+        <div class="debug-row">
+            <span class="debug-label">FPS:</span>
+            <span class="debug-value" id="debug-fps">0</span>
+        </div>
+        <div class="debug-row">
+            <span class="debug-label">弹幕数:</span>
+            <span class="debug-value" id="debug-count">0</span>
+        </div>
+        <div class="debug-row">
+            <span class="debug-label">连接:</span>
+            <span class="debug-value" id="debug-ws">断开</span>
+        </div>
+        <div class="debug-row">
+            <span class="debug-label">过滤:</span>
+            <span class="debug-value" id="debug-filter">关闭</span>
+        </div>
+    </div>
+
     <script>
-        // 配置
-        const config = {
-            maxDanmaku: 100,
-            fontSize: 50,
-            animationMethod: 'transform',
-            danmakuSpeedSeconds: 10,
-            showDebug: false
-        };
+    /**
+     * Canvas 弹幕渲染引擎
+     * 高性能弹幕系统，使用 Canvas 2D 渲染
+     */
+    
+    // ============================================================
+    // 配置
+    // ============================================================
+    
+    const Config = {
+        // 弹幕设置
+        fontSize: 48,
+        fontFamily: "'PingFang SC', 'Microsoft YaHei', sans-serif",
+        fontWeight: 'bold',
+        maxDanmaku: 150,
+        speedSeconds: 10,  // 弹幕穿越屏幕的秒数
         
-        // 状态变量
-        let socket = null;
-        let danmakuContainer = null;
-        let debugPanel = null;
-        let activeDanmakuCount = 0;
-        let processedMessages = new Set(); // 用于存储已处理的消息ID，防止重复
-        let filterSettings = {
-            enabled: false,
-            allowed_groups: new Set() // Store allowed group_ids as a Set for efficient lookup
-        };
+        // 轨道设置
+        trackHeight: 60,   // 每个轨道高度
+        trackPadding: 10,  // 轨道间距
         
-        // 初始化
-        window.onload = function() {
-            danmakuContainer = document.getElementById('container');
-            debugPanel = document.getElementById('debug-info');
-            
-            // 设置初始弹幕速度（默认值）
-            setDanmakuSpeed(config.danmakuSpeedSeconds); // 设置默认值
-            
-            // 检查URL参数
-            const urlParams = new URLSearchParams(window.location.search);
-            if (urlParams.has('debug')) {
-                config.showDebug = urlParams.get('debug') === 'true';
-                toggleDebugPanel();
-            }
-            
-            // 连接WebSocket
-            connectWebSocket();
-            
-            // 监听来自控制面板的消息
-            window.addEventListener('message', function(event) {
-                try {
-                    const data = event.data;
-                    
-                    if (data.action === 'showRecentMessages') {
-                        // 显示最近消息
-                        showRecentMessages(data.messages);
-                    } else if (data.action === 'newDanmaku') {
-                        // 显示新弹幕
-                        processDanmaku(data.message);
-                    } else if (data.action === 'clearDanmaku') {
-                        // 清空弹幕
-                        clearAllDanmaku();
-                    } else if (data.action === 'updateSettings') {
-                        // 更新设置
-                        updateSettings(data.settings);
-                    } else if (data.action === 'setFilter') {
-                        filterSettings.enabled = data.enabled;
-                        filterSettings.allowed_groups = new Set((data.allowed_groups || []).map(String));
-                        addDebugMessage(`过滤设置已更新: 启用=${filterSettings.enabled}, 允许群组=${JSON.stringify(Array.from(filterSettings.allowed_groups))}`);
-                    } else if (data.action === 'setting_update') {
-                        if (data.key === 'danmaku_speed') {
-                            setDanmakuSpeed(data.value);
-                        }
-                    }
-                } catch (error) {
-                    addDebugMessage(`处理控制面板消息错误: ${error.message}`);
-                }
-            });
-            
-            // 通知控制面板预览框已准备好
-            if (window.parent && window.parent !== window) {
-                window.parent.postMessage({ type: 'previewReady' }, '*');
-                addDebugMessage("已通知控制面板预览框准备就绪");
-            }
-        };
+        // 视觉设置
+        shadowBlur: 4,
+        shadowColor: 'rgba(0, 0, 0, 0.8)',
+        strokeWidth: 3,
+        strokeColor: '#000',
         
-        // 连接WebSocket
-        function connectWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws`;
+        // 调试
+        showDebug: false,
+        
+        // 颜色映射
+        colors: {
+            '红': '#FF3B2F',
+            '橙': '#FF9500',
+            '黄': '#FFCC02',
+            '绿': '#35C759',
+            '蓝': '#31ADE6',
+            '靛': '#5856D7',
+            '紫': '#AF52DE',
+            '灰': '#9E9E9E'
+        },
+        
+        // 需要白色描边的深色
+        darkColors: new Set(['#5856D7', '#AF52DE', '#35C759', '#31ADE6'])
+    };
+    
+    // ============================================================
+    // 弹幕类
+    // ============================================================
+    
+    class Danmaku {
+        constructor(text, options = {}) {
+            this.text = text;
+            this.messageId = options.messageId || null;
+            this.userId = options.userId || null;
+            this.groupId = options.groupId || null;
             
-            addDebugMessage(`正在连接到 ${wsUrl}`);
+            // 解析命令
+            const parsed = this.parseCommands(text);
+            this.displayText = parsed.content;
+            this.color = parsed.color || '#FFFFFF';
+            this.position = parsed.position || 'scroll';  // 'scroll', 'top', 'bottom'
+            this.needsLightStroke = parsed.needsLightStroke || false;
             
-            socket = new WebSocket(wsUrl);
+            // 位置和速度
+            this.x = 0;
+            this.y = 0;
+            this.width = 0;
+            this.speed = 0;
+            this.track = -1;
             
-            socket.onopen = function(e) {
-                addDebugMessage("WebSocket连接成功");
-            };
+            // 状态
+            this.alive = true;
+            this.createdAt = performance.now();
             
-            socket.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    addDebugMessage(`收到消息: ${data.type}`);
-                    
-                    if (data.type === 'danmaku') {
-                        // 处理弹幕消息
-                        processDanmaku(data);
-                    } else if (data.type === 'setting_update') {
-                        if (data.key === 'danmaku_speed') {
-                            setDanmakuSpeed(data.value);
-                        } else if (data.settings && typeof data.settings === 'object') {
-                            // 批量设置更新
-                            updateSettings(data.settings);
-                        }
-                    } else if (data.type === 'broadcast_filter_update') {
-                        addDebugMessage(`过滤器更新: enabled=${data.filter_enabled}, 允许群组=${JSON.stringify(data.allowed_groups)}`);
-                        const oldFilterEnabled = filterSettings.enabled;
-                        const oldAllowedGroupsSize = filterSettings.allowed_groups.size;
-
-                        filterSettings.enabled = data.filter_enabled;
-                        filterSettings.allowed_groups = new Set((data.allowed_groups || []).map(String));
-
-                        // 如果过滤器从"启用"变为"禁用且无允许群组"（即取消全部监听）
-                        // 或者从"启用且有群组"变为"启用但允许群组为空"
-                        if ((!filterSettings.enabled && filterSettings.allowed_groups.size === 0) || 
-                            (filterSettings.enabled && filterSettings.allowed_groups.size === 0 && (oldFilterEnabled && oldAllowedGroupsSize > 0))) {
-                            addDebugMessage("过滤器已禁用或清空，清除当前所有弹幕。");
-                            clearAllDanmaku();
-                        }
-                    } else if (data.type === 'active_group') {
-                        addDebugMessage(`收到旧的 'active_group' 消息 (可能需要更新): ${data.group_id}`);
-                    } else if (data.type === 'connection') {
-                        // 连接消息
-                        addDebugMessage(`连接状态: ${data.message}`);
-                        if (data.settings && data.settings.danmaku_speed) {
-                            setDanmakuSpeed(data.settings.danmaku_speed);
-                        }
-                    }
-                } catch (error) {
-                    addDebugMessage(`处理WebSocket消息错误: ${error.message}`);
-                }
-            };
-            
-            socket.onclose = function(event) {
-                if (event.wasClean) {
-                    addDebugMessage(`连接已关闭，代码=${event.code} 原因=${event.reason}`);
-                } else {
-                    addDebugMessage("连接异常断开");
-                }
-                
-                // 尝试重新连接
-                setTimeout(connectWebSocket, 3000);
-            };
-            
-            socket.onerror = function(error) {
-                addDebugMessage(`WebSocket错误: ${error.message}`);
-            };
+            // 固定弹幕的显示时间
+            this.fixedDuration = options.fixedDuration || 5000;
         }
         
-        // 设置弹幕速度的函数
-        function setDanmakuSpeed(speed) {
-            if (typeof speed === 'number' && speed >= 5 && speed <= 60) {
-                document.documentElement.style.setProperty('--danmaku-duration', speed + 's');
-                config.danmakuSpeedSeconds = speed;
-                addDebugMessage(`弹幕速度已设置为: ${speed} 秒`);
-            } else {
-                addDebugMessage(`无效的速度值: ${speed}`);
-            }
-        }
-        
-        // 处理弹幕消息
-        function processDanmaku(data) {
-            // 检查是否已处理过该消息
-            if (data.message_id && processedMessages.has(data.message_id)) {
-                addDebugMessage(`跳过重复消息: ${data.content.substring(0, 15)}...`);
-                return;
-            }
-            
-            // 检查过滤设置
-            if (filterSettings.enabled) {
-                const messageGroupId = String(data.group_id);
-                if (!filterSettings.allowed_groups.has(messageGroupId)) {
-                    addDebugMessage(`过滤消息: 群ID=${messageGroupId}, 不在允许列表 ${JSON.stringify(Array.from(filterSettings.allowed_groups))} 中`);
-                    return;
-                }
-            }
-            
-            // 记录消息ID，防止重复处理
-            if (data.message_id) {
-                processedMessages.add(data.message_id);
-            }
-            
-            // 创建弹幕元素
-            createDanmaku(data.content, data.user_id, data.message_id);
-            
-            // 添加调试信息
-            addDebugMessage(`显示弹幕: ${data.content.substring(0, 15)}...`);
-        }
-        
-        // 显示最近消息
-        function showRecentMessages(messages) {
-            // 清空现有弹幕
-            clearAllDanmaku();
-            
-            // 清空已处理消息记录
-            processedMessages.clear();
-            
-            // 显示最近消息
-            let displayedCount = 0;
-            messages.forEach(message => {
-                // 检查过滤设置
-                if (filterSettings.enabled) {
-                    if (!filterSettings.allowed_groups.has(String(message.group_id))) {
-                        return; // Skip if not in allowed groups
-                    }
-                }
-                
-                // 记录消息ID，防止重复处理
-                if (message.message_id) {
-                    processedMessages.add(message.message_id);
-                }
-                
-                // 创建弹幕元素
-                createDanmaku(message.content, message.user_id, message.message_id);
-                displayedCount++;
-            });
-            
-            addDebugMessage(`显示了 ${displayedCount} 条最近消息，过滤后共 ${messages.length} 条`);
-        }
-        
-        // 创建弹幕元素
-        function createDanmaku(text, userId, messageId) {
-            // 检查活跃弹幕数量，如果超过最大数量，直接返回
-            if (activeDanmakuCount >= config.maxDanmaku) {
-                console.log('已达最大弹幕数量，丢弃新弹幕');
-                return;
-            }
-            
-            // 解析命令和文本内容
-            const { content, commands } = parseCommands(text);
-            
-            // 防止XSS
-            const safeText = String(content).replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            const trackHeight = danmakuContainer.clientHeight - config.fontSize;
-            
-            const danmaku = document.createElement('div');
-            danmaku.className = 'danmaku';
-            danmaku.innerHTML = safeText;
-            danmaku.style.fontSize = `${config.fontSize}px`;
-            danmaku.setAttribute('data-message-id', messageId || '');
-            
-            // 使用更美观的色号
-            const colorCommands = {
-                '红': '#FF3B2F',    // 红色
-                '橙': '#FF9500',    // 橙色
-                '黄': '#FFCC02',    // 黄色
-                '绿': '#35C759',    // 绿色
-                '蓝': '#31ADE6',    // 蓝色
-                '靛': '#5856D7',    // 靛青色
-                '紫': '#AF52DE',    // 紫色
-                '灰': '#9E9E9E'     // 中性灰色
-            };
-            
-            // 深色弹幕需要描边的颜色映射
-            const needsOutlineColors = {
-                '#5856D7': true,  // 靛青色
-                '#AF52DE': true,  // 紫色
-                '#35C759': true,  // 绿色
-                '#31ADE6': true,  // 蓝色
-            };
-            
-            // 应用颜色命令
-            if (commands.color) {
-                danmaku.style.color = commands.color;
-            } else {
-                danmaku.style.color = colorCommands[commands.color] || '#FFFFFF';
-            }
-            
-            // 为深色弹幕添加描边
-            if (commands.needsOutline) {
-                danmaku.style.textShadow = '0 0 2px #FFF, 0 0 2px #FFF, 0 0 2px #FFF, 0 0 2px #FFF';
-            }
-            
-            // 应用位置命令
-            let top;
-            let isFixed = false;
-            
-            if (commands.position === 'top') {
-                // 居中置顶
-                top = 10;
-                isFixed = true;
-            } else if (commands.position === 'bottom') {
-                // 居中置底
-                top = danmakuContainer.clientHeight - config.fontSize - 10;
-                isFixed = true;
-            } else {
-                // 默认在上半部分随机位置
-                top = Math.floor(Math.random() * (trackHeight / 2));
-            }
-            
-            danmaku.style.top = `${top}px`;
-            
-            // 添加到容器
-            danmakuContainer.appendChild(danmaku);
-            
-            // 获取宽度
-            const danmakuWidth = danmaku.offsetWidth;
-            
-            // 设置初始位置（确保在屏幕右侧外）
-            const containerWidth = danmakuContainer.clientWidth;
-            const startPosition = containerWidth;
-            const endPosition = -danmakuWidth;
-            
-            // 根据文本长度计算动画持续时间：短消息更快，长消息更慢
-            // 基础速度：每秒移动屏幕宽度的15%（约6-7秒穿过屏幕）
-            const baseDuration = 6000;
-            // 文本长度影响系数：每多10个字符增加0.5秒时间
-            const lengthFactor = Math.min(3000, Math.max(0, safeText.length * 50));
-            const duration = baseDuration + lengthFactor;
-            
-            console.log(`弹幕: "${safeText.substring(0, 20)}${safeText.length > 20 ? '...' : ''}" 宽度=${danmakuWidth}px, 持续时间=${duration}ms, 命令=${JSON.stringify(commands)}`);
-            
-            // 增加活跃弹幕计数
-            activeDanmakuCount++;
-            updateDanmakuCount();
-            
-            // 应用动画
-            if (isFixed) {
-                // 固定位置的弹幕使用淡入淡出动画
-                danmaku.style.left = '50%';
-                danmaku.style.transform = 'translateX(-50%)';
-                danmaku.style.whiteSpace = 'nowrap';
-                
-                // 直接出现和消失，不使用渐入渐出效果
-                danmaku.style.animation = 'none';
-                danmaku.style.opacity = '1';
-                
-                // 设置定时器在指定时间后移除弹幕
-                setTimeout(() => {
-                    if (danmakuContainer.contains(danmaku)) {
-                        danmakuContainer.removeChild(danmaku);
-                        activeDanmakuCount--;
-                        updateDanmakuCount();
-                    }
-                }, duration);
-            } else {
-                if (config.animationMethod === 'transform') {
-                    // 使用 CSS transform 动画
-                    danmaku.style.left = '0';
-                    danmaku.style.right = 'auto';
-                    danmaku.style.animation = '';
-
-                    // 监听动画结束事件，移除弹幕
-                    danmaku.addEventListener('animationend', () => {
-                        if (danmakuContainer.contains(danmaku)) {
-                            danmakuContainer.removeChild(danmaku);
-                            activeDanmakuCount--;
-                            updateDanmakuCount();
-                        }
-                    });
-                } else {
-                    // 使用 left 属性与 requestAnimationFrame 实现动画
-                    danmaku.style.animation = 'none';
-                    const containerWidth = danmakuContainer.clientWidth;
-                    const startPosition = containerWidth;
-                    const endPosition = -danmakuWidth;
-                    let startTime = null;
-                    const totalDuration = (config.danmakuSpeedSeconds || 10) * 1000;
-
-                    function step(timestamp) {
-                        if (!startTime) startTime = timestamp;
-                        const elapsed = timestamp - startTime;
-                        const progress = Math.min(1, elapsed / totalDuration);
-                        const current = startPosition + (endPosition - startPosition) * progress;
-                        danmaku.style.left = current + 'px';
-                        danmaku.style.right = 'auto';
-                        if (progress < 1 && danmakuContainer.contains(danmaku)) {
-                            requestAnimationFrame(step);
-                        } else {
-                            if (danmakuContainer.contains(danmaku)) {
-                                danmakuContainer.removeChild(danmaku);
-                                activeDanmakuCount--;
-                                updateDanmakuCount();
-                            }
-                        }
-                    }
-                    requestAnimationFrame(step);
-                }
-            }
-        }
-        
-        // 解析命令和文本内容
-        function parseCommands(text) {
-            // 默认结果
+        parseCommands(text) {
             const result = {
                 content: text,
-                commands: {
-                    position: null,
-                    color: null
-                }
+                color: null,
+                position: null,
+                needsLightStroke: false
             };
             
-            // 分割文本和命令
             const parts = text.split(' ');
-            if (parts.length <= 1) {
-                return result;
-            }
+            if (parts.length <= 1) return result;
             
-            // 检查是否有命令
-            const possibleCommands = parts.slice(1);
             const contentParts = [parts[0]];
+            const positionMap = { '居中': 'top', '下居中': 'bottom' };
             
-            // 定义支持的命令
-            const positionCommands = {
-                '居中': 'top',
-                '下居中': 'bottom'
-            };
-            
-            // 使用更美观的色号
-            const colorCommands = {
-                '红': '#FF3B2F',    // 红色
-                '橙': '#FF9500',    // 橙色
-                '黄': '#FFCC02',    // 黄色
-                '绿': '#35C759',    // 绿色
-                '蓝': '#31ADE6',    // 蓝色
-                '靛': '#5856D7',    // 靛青色
-                '紫': '#AF52DE',    // 紫色
-                '灰': '#9E9E9E'     // 中性灰色
-            };
-            
-            // 深色弹幕需要描边的颜色映射
-            const needsOutlineColors = {
-                '#5856D7': true,  // 靛青色
-                '#AF52DE': true,  // 紫色
-                '#35C759': true,  // 绿色
-                '#31ADE6': true,  // 蓝色
-            };
-            
-            // 检查每个可能的命令
-            for (const cmd of possibleCommands) {
-                if (positionCommands[cmd]) {
-                    result.commands.position = positionCommands[cmd];
-                } else if (colorCommands[cmd]) {
-                    result.commands.color = colorCommands[cmd];
-                    // 检查是否需要描边
-                    if (needsOutlineColors[colorCommands[cmd]]) {
-                        result.commands.needsOutline = true;
+            for (let i = 1; i < parts.length; i++) {
+                const part = parts[i];
+                
+                if (positionMap[part]) {
+                    result.position = positionMap[part];
+                } else if (Config.colors[part]) {
+                    result.color = Config.colors[part];
+                    if (Config.darkColors.has(result.color)) {
+                        result.needsLightStroke = true;
                     }
                 } else {
-                    // 如果不是命令，则是内容的一部分
-                    contentParts.push(cmd);
+                    contentParts.push(part);
                 }
             }
             
-            // 重建内容
             result.content = contentParts.join(' ');
-            
             return result;
         }
         
-        // 更新弹幕计数显示
-        function updateDanmakuCount() {
-            const countEl = document.getElementById('danmaku-count');
-            if (countEl) {
-                countEl.textContent = activeDanmakuCount;
+        update(deltaTime) {
+            if (!this.alive) return;
+            
+            if (this.position === 'scroll') {
+                // 滚动弹幕
+                this.x -= this.speed * deltaTime;
+                if (this.x + this.width < 0) {
+                    this.alive = false;
+                }
+            } else {
+                // 固定弹幕
+                const elapsed = performance.now() - this.createdAt;
+                if (elapsed > this.fixedDuration) {
+                    this.alive = false;
+                }
+            }
+        }
+        
+        render(ctx) {
+            if (!this.alive) return;
+            
+            ctx.save();
+            
+            // 设置字体
+            ctx.font = `${Config.fontWeight} ${Config.fontSize}px ${Config.fontFamily}`;
+            ctx.textBaseline = 'top';
+            
+            // 阴影
+            ctx.shadowBlur = Config.shadowBlur;
+            ctx.shadowColor = Config.shadowColor;
+            
+            // 描边
+            if (this.needsLightStroke) {
+                ctx.strokeStyle = '#FFFFFF';
+                ctx.lineWidth = 2;
+            } else {
+                ctx.strokeStyle = Config.strokeColor;
+                ctx.lineWidth = Config.strokeWidth;
+            }
+            ctx.lineJoin = 'round';
+            ctx.strokeText(this.displayText, this.x, this.y);
+            
+            // 填充
+            ctx.fillStyle = this.color;
+            ctx.shadowBlur = 0;
+            ctx.fillText(this.displayText, this.x, this.y);
+            
+            ctx.restore();
+        }
+    }
+    
+    // ============================================================
+    // 弹幕引擎
+    // ============================================================
+    
+    class DanmakuEngine {
+        constructor(canvas) {
+            this.canvas = canvas;
+            this.ctx = canvas.getContext('2d');
+            
+            this.danmakus = [];
+            this.tracks = [];  // 轨道占用状态
+            this.processedIds = new Set();
+            
+            // 性能统计
+            this.lastFrameTime = 0;
+            this.frameCount = 0;
+            this.fps = 0;
+            this.fpsUpdateTime = 0;
+            
+            // 过滤设置
+            this.filterEnabled = false;
+            this.allowedGroups = new Set();
+            
+            // 初始化
+            this.resize();
+            this.initTracks();
+            
+            // 事件监听
+            window.addEventListener('resize', () => this.resize());
+            
+            // 启动渲染循环
+            this.running = true;
+            requestAnimationFrame((t) => this.loop(t));
+        }
+        
+        resize() {
+            const dpr = window.devicePixelRatio || 1;
+            const rect = this.canvas.getBoundingClientRect();
+            
+            this.canvas.width = rect.width * dpr;
+            this.canvas.height = rect.height * dpr;
+            
+            this.ctx.scale(dpr, dpr);
+            
+            this.width = rect.width;
+            this.height = rect.height;
+            
+            this.initTracks();
+        }
+        
+        initTracks() {
+            const trackCount = Math.floor(this.height / (Config.trackHeight + Config.trackPadding));
+            this.tracks = new Array(trackCount).fill(0);  // 存储每个轨道的结束时间
+        }
+        
+        findAvailableTrack() {
+            const now = performance.now();
+            for (let i = 0; i < this.tracks.length; i++) {
+                if (this.tracks[i] <= now) {
+                    return i;
+                }
+            }
+            // 如果没有空轨道，返回最早释放的轨道
+            let minIndex = 0;
+            let minTime = this.tracks[0];
+            for (let i = 1; i < this.tracks.length; i++) {
+                if (this.tracks[i] < minTime) {
+                    minTime = this.tracks[i];
+                    minIndex = i;
+                }
+            }
+            return minIndex;
+        }
+        
+        add(text, options = {}) {
+            // 检查消息ID是否已处理
+            if (options.messageId && this.processedIds.has(options.messageId)) {
+                return null;
             }
             
-            // 向父窗口报告弹幕数量（用于控制台显示）
-            if (window.parent && window.parent !== window) {
+            // 检查过滤
+            if (this.filterEnabled && options.groupId) {
+                if (!this.allowedGroups.has(String(options.groupId))) {
+                    return null;
+                }
+            }
+            
+            // 检查数量限制
+            if (this.danmakus.length >= Config.maxDanmaku) {
+                // 移除最老的弹幕
+                this.danmakus.shift();
+            }
+            
+            const danmaku = new Danmaku(text, options);
+            
+            // 测量文本宽度
+            this.ctx.font = `${Config.fontWeight} ${Config.fontSize}px ${Config.fontFamily}`;
+            danmaku.width = this.ctx.measureText(danmaku.displayText).width;
+            
+            if (danmaku.position === 'scroll') {
+                // 滚动弹幕
+                danmaku.x = this.width;
+                
+                // 分配轨道
+                danmaku.track = this.findAvailableTrack();
+                danmaku.y = danmaku.track * (Config.trackHeight + Config.trackPadding) + Config.trackPadding;
+                
+                // 计算速度（像素/毫秒）
+                const totalDistance = this.width + danmaku.width;
+                danmaku.speed = totalDistance / (Config.speedSeconds * 1000);
+                
+                // 更新轨道占用时间
+                // 计算弹幕完全进入屏幕的时间
+                const enterTime = danmaku.width / danmaku.speed;
+                this.tracks[danmaku.track] = performance.now() + enterTime + 100;  // 加100ms间隔
+                
+            } else if (danmaku.position === 'top') {
+                // 顶部居中
+                danmaku.x = (this.width - danmaku.width) / 2;
+                danmaku.y = Config.trackPadding;
+                
+            } else if (danmaku.position === 'bottom') {
+                // 底部居中
+                danmaku.x = (this.width - danmaku.width) / 2;
+                danmaku.y = this.height - Config.fontSize - Config.trackPadding;
+            }
+            
+            this.danmakus.push(danmaku);
+            
+            // 记录消息ID
+            if (options.messageId) {
+                this.processedIds.add(options.messageId);
+                // 限制已处理ID的数量
+                if (this.processedIds.size > 1000) {
+                    const idsArray = Array.from(this.processedIds);
+                    this.processedIds = new Set(idsArray.slice(-500));
+                }
+            }
+            
+            return danmaku;
+        }
+        
+        clear() {
+            this.danmakus = [];
+            this.processedIds.clear();
+            this.initTracks();
+        }
+        
+        setFilter(enabled, groups) {
+            this.filterEnabled = enabled;
+            this.allowedGroups = new Set((groups || []).map(String));
+            
+            // 如果启用过滤且没有允许的群组，清空弹幕
+            if (enabled && this.allowedGroups.size === 0) {
+                this.clear();
+            }
+        }
+        
+        setSpeed(seconds) {
+            if (seconds >= 5 && seconds <= 60) {
+                Config.speedSeconds = seconds;
+            }
+        }
+        
+        loop(currentTime) {
+            if (!this.running) return;
+            
+            // 计算时间差
+            const deltaTime = this.lastFrameTime ? currentTime - this.lastFrameTime : 16;
+            this.lastFrameTime = currentTime;
+            
+            // 更新FPS
+            this.frameCount++;
+            if (currentTime - this.fpsUpdateTime >= 1000) {
+                this.fps = this.frameCount;
+                this.frameCount = 0;
+                this.fpsUpdateTime = currentTime;
+                this.updateDebugPanel();
+            }
+            
+            // 清空画布
+            this.ctx.clearRect(0, 0, this.width, this.height);
+            
+            // 更新和渲染弹幕
+            for (let i = this.danmakus.length - 1; i >= 0; i--) {
+                const danmaku = this.danmakus[i];
+                danmaku.update(deltaTime);
+                
+                if (!danmaku.alive) {
+                    this.danmakus.splice(i, 1);
+                } else {
+                    danmaku.render(this.ctx);
+                }
+            }
+            
+            requestAnimationFrame((t) => this.loop(t));
+        }
+        
+        updateDebugPanel() {
+            if (!Config.showDebug) return;
+            
+            document.getElementById('debug-fps').textContent = this.fps;
+            document.getElementById('debug-count').textContent = this.danmakus.length;
+        }
+        
+        destroy() {
+            this.running = false;
+            this.clear();
+        }
+    }
+    
+    // ============================================================
+    // WebSocket 客户端
+    // ============================================================
+    
+    class WebSocketClient {
+        constructor(engine) {
+            this.engine = engine;
+            this.socket = null;
+            this.reconnectAttempts = 0;
+            this.maxReconnectAttempts = 10;
+            this.reconnectDelay = 3000;
+        }
+        
+        connect() {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const url = `${protocol}//${location.host}/ws`;
+            
+            console.log(`[WS] 连接到 ${url}`);
+            this.socket = new WebSocket(url);
+            
+            this.socket.onopen = () => {
+                console.log('[WS] 连接成功');
+                this.reconnectAttempts = 0;
+                this.updateConnectionStatus(true);
+            };
+            
+            this.socket.onmessage = (event) => {
+                this.handleMessage(event.data);
+            };
+            
+            this.socket.onclose = (event) => {
+                console.log(`[WS] 连接关闭: ${event.code}`);
+                this.updateConnectionStatus(false);
+                this.scheduleReconnect();
+            };
+            
+            this.socket.onerror = (error) => {
+                console.error('[WS] 错误:', error);
+            };
+        }
+        
+        handleMessage(data) {
+            try {
+                const msg = JSON.parse(data);
+                
+                switch (msg.type) {
+                    case 'danmaku':
+                        this.engine.add(msg.content, {
+                            messageId: msg.message_id,
+                            userId: msg.user_id,
+                            groupId: msg.group_id
+                        });
+                        break;
+                        
+                    case 'connection':
+                        console.log('[WS] 连接确认:', msg.message);
+                        if (msg.settings?.danmaku_speed) {
+                            this.engine.setSpeed(msg.settings.danmaku_speed);
+                        }
+                        break;
+                        
+                    case 'broadcast_filter_update':
+                        console.log('[WS] 过滤器更新:', msg);
+                        this.engine.setFilter(msg.filter_enabled, msg.allowed_groups);
+                        this.updateFilterStatus(msg.filter_enabled, msg.allowed_groups);
+                        break;
+                        
+                    case 'setting_update':
+                        if (msg.key === 'danmaku_speed') {
+                            this.engine.setSpeed(msg.value);
+                        } else if (msg.settings) {
+                            this.applySettings(msg.settings);
+                        }
+                        break;
+                        
+                    case 'stats':
+                        // 统计信息
+                        break;
+                }
+            } catch (e) {
+                console.error('[WS] 消息解析错误:', e);
+            }
+        }
+        
+        applySettings(settings) {
+            if (settings.fontSize) {
+                Config.fontSize = settings.fontSize;
+            }
+            if (settings.maxDanmaku) {
+                Config.maxDanmaku = settings.maxDanmaku;
+            }
+        }
+        
+        scheduleReconnect() {
+            if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+                console.log('[WS] 达到最大重连次数');
+                return;
+            }
+            
+            this.reconnectAttempts++;
+            const delay = this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts - 1);
+            
+            console.log(`[WS] ${delay}ms 后重连 (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+            
+            setTimeout(() => this.connect(), delay);
+        }
+        
+        updateConnectionStatus(connected) {
+            const el = document.getElementById('debug-ws');
+            if (el) {
+                el.textContent = connected ? '已连接' : '断开';
+                el.className = 'debug-value' + (connected ? '' : ' error');
+            }
+        }
+        
+        updateFilterStatus(enabled, groups) {
+            const el = document.getElementById('debug-filter');
+            if (el) {
+                if (enabled && groups?.length > 0) {
+                    el.textContent = `${groups.length}个群`;
+                    el.className = 'debug-value';
+                } else {
+                    el.textContent = enabled ? '空' : '关闭';
+                    el.className = 'debug-value' + (enabled ? ' warning' : '');
+                }
+            }
+        }
+        
+        send(data) {
+            if (this.socket?.readyState === WebSocket.OPEN) {
+                this.socket.send(JSON.stringify(data));
+            }
+        }
+    }
+    
+    // ============================================================
+    // 初始化
+    // ============================================================
+    
+    let engine, wsClient;
+    
+    window.addEventListener('DOMContentLoaded', () => {
+        const canvas = document.getElementById('danmaku-canvas');
+        engine = new DanmakuEngine(canvas);
+        wsClient = new WebSocketClient(engine);
+        
+        // 检查URL参数
+        const params = new URLSearchParams(location.search);
+        if (params.get('debug') === 'true') {
+            Config.showDebug = true;
+            document.getElementById('debug-panel').classList.add('visible');
+        }
+        
+        // 连接WebSocket
+        wsClient.connect();
+        
+        // 监听来自控制面板的消息
+        window.addEventListener('message', (event) => {
+            const data = event.data;
+            if (!data?.action) return;
+            
+            switch (data.action) {
+                case 'showRecentMessages':
+                    engine.clear();
+                    data.messages?.forEach(msg => {
+                        engine.add(msg.content, {
+                            messageId: msg.message_id,
+                            userId: msg.user_id,
+                            groupId: msg.group_id
+                        });
+                    });
+                    break;
+                    
+                case 'newDanmaku':
+                    engine.add(data.message.content, {
+                        messageId: data.message.message_id,
+                        userId: data.message.user_id,
+                        groupId: data.message.group_id
+                    });
+                    break;
+                    
+                case 'clearDanmaku':
+                    engine.clear();
+                    break;
+                    
+                case 'updateSettings':
+                    wsClient.applySettings(data.settings);
+                    break;
+                    
+                case 'setFilter':
+                    engine.setFilter(data.enabled, data.allowed_groups);
+                    break;
+            }
+        });
+        
+        // 通知父窗口已准备好
+        if (window.parent !== window) {
+            window.parent.postMessage({ type: 'previewReady' }, '*');
+        }
+        
+        // 定期向父窗口报告状态
+        setInterval(() => {
+            if (window.parent !== window) {
                 window.parent.postMessage({
                     type: 'danmakuStats',
-                    count: activeDanmakuCount
+                    count: engine.danmakus.length
                 }, '*');
             }
-        }
-        
-        // 清空所有弹幕
-        function clearAllDanmaku() {
-            danmakuContainer.innerHTML = '';
-            activeDanmakuCount = 0;
-            updateDanmakuCount();
-        }
-        
-        // 应用设置
-        function updateSettings(settings) {
-            if (settings.fontSize && typeof settings.fontSize === 'number') {
-                config.fontSize = settings.fontSize;
-                document.documentElement.style.setProperty('--danmaku-font-size', `${config.fontSize}px`);
-                console.log(`字体大小已更新为 ${config.fontSize}px`);
-            }
-            
-            if (settings.maxDanmaku && typeof settings.maxDanmaku === 'number') {
-                config.maxDanmaku = settings.maxDanmaku;
-                console.log(`最大弹幕数已更新为 ${config.maxDanmaku}`);
-            }
-            
-            if (settings.animationMethod) {
-                config.animationMethod = settings.animationMethod;
-                console.log(`动画方式已更新为 ${config.animationMethod}`);
-            }
-            
-            // 更新所有现有弹幕的字体大小
-            document.querySelectorAll('.danmaku').forEach(element => {
-                element.style.fontSize = `${config.fontSize}px`;
-            });
-        }
-        
-        // 显示调试信息
-        function toggleDebugPanel() {
-            debugPanel.style.display = config.showDebug ? 'block' : 'none';
-        }
-        
-        // 添加调试信息
-        function addDebugMessage(message) {
-            console.log(message);
-            // 这里可以根据需要将调试信息添加到页面上的某个元素中
-        }
+        }, 1000);
+    });
+    
+    // 清理
+    window.addEventListener('beforeunload', () => {
+        engine?.destroy();
+    });
     </script>
 </body>
-</html> 
+</html>

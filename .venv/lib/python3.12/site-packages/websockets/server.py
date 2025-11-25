@@ -32,6 +32,7 @@ from .typing import (
     ExtensionHeader,
     LoggerLike,
     Origin,
+    StatusLike,
     Subprotocol,
     UpgradeProtocol,
 )
@@ -39,10 +40,12 @@ from .utils import accept_key
 
 
 # See #940 for why lazy_import isn't used here for backwards compatibility.
+# See #1400 for why listing compatibility imports in __all__ helps PyCharm.
 from .legacy.server import *  # isort:skip  # noqa: I001
+from .legacy.server import __all__ as legacy__all__
 
 
-__all__ = ["ServerProtocol"]
+__all__ = ["ServerProtocol"] + legacy__all__
 
 
 class ServerProtocol(Protocol):
@@ -478,7 +481,7 @@ class ServerProtocol(Protocol):
 
     def reject(
         self,
-        status: http.HTTPStatus,
+        status: StatusLike,
         text: str,
     ) -> Response:
         """
@@ -499,6 +502,8 @@ class ServerProtocol(Protocol):
             Response: WebSocket handshake response event to send to the client.
 
         """
+        # If a user passes an int instead of a HTTPStatus, fix it automatically.
+        status = http.HTTPStatus(status)
         body = text.encode()
         headers = Headers(
             [
@@ -514,7 +519,7 @@ class ServerProtocol(Protocol):
         # "handshake_exc is None if and only if opening handshake succeeded."
         if self.handshake_exc is None:
             self.handshake_exc = InvalidStatus(response)
-        self.logger.info("connection failed (%d %s)", status.value, status.phrase)
+        self.logger.info("connection rejected (%d %s)", status.value, status.phrase)
         return response
 
     def send_response(self, response: Response) -> None:

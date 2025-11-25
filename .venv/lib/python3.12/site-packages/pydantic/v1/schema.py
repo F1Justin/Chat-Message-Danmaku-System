@@ -31,7 +31,7 @@ from uuid import UUID
 
 from typing_extensions import Annotated, Literal
 
-from pydantic.v1.fields import (
+from .fields import (
     MAPPING_LIKE_SHAPES,
     SHAPE_DEQUE,
     SHAPE_FROZENSET,
@@ -46,9 +46,9 @@ from pydantic.v1.fields import (
     FieldInfo,
     ModelField,
 )
-from pydantic.v1.json import pydantic_encoder
-from pydantic.v1.networks import AnyUrl, EmailStr
-from pydantic.v1.types import (
+from .json import pydantic_encoder
+from .networks import AnyUrl, EmailStr
+from .types import (
     ConstrainedDecimal,
     ConstrainedFloat,
     ConstrainedFrozenSet,
@@ -69,7 +69,7 @@ from pydantic.v1.types import (
     conset,
     constr,
 )
-from pydantic.v1.typing import (
+from .typing import (
     all_literal_values,
     get_args,
     get_origin,
@@ -80,11 +80,11 @@ from pydantic.v1.typing import (
     is_none_type,
     is_union,
 )
-from pydantic.v1.utils import ROOT_KEY, get_model, lenient_issubclass
+from .utils import ROOT_KEY, get_model, lenient_issubclass
 
 if TYPE_CHECKING:
-    from pydantic.v1.dataclasses import Dataclass
-    from pydantic.v1.main import BaseModel
+    from .dataclasses import Dataclass
+    from .main import BaseModel
 
 default_prefix = '#/definitions/'
 default_ref_template = '#/definitions/{model}'
@@ -198,6 +198,7 @@ def model_schema(
 
 
 def get_field_info_schema(field: ModelField, schema_overrides: bool = False) -> Tuple[Dict[str, Any], bool]:
+
     # If no title is explicitly set, we don't set title in the schema for enums.
     # The behaviour is the same as `BaseModel` reference, where the default title
     # is in the definitions part of the schema.
@@ -378,7 +379,7 @@ def get_flat_models_from_field(field: ModelField, known_models: TypeModelSet) ->
     :param known_models: used to solve circular references
     :return: a set with the model used in the declaration for this field, if any, and all its sub-models
     """
-    from pydantic.v1.main import BaseModel
+    from .main import BaseModel
 
     flat_models: TypeModelSet = set()
 
@@ -445,7 +446,7 @@ def field_type_schema(
     Take a single ``field`` and generate the schema for its type only, not including additional
     information as title, etc. Also return additional schema definitions, from sub-models.
     """
-    from pydantic.v1.main import BaseModel  # noqa: F811
+    from .main import BaseModel  # noqa: F811
 
     definitions = {}
     nested_models: Set[str] = set()
@@ -738,7 +739,7 @@ def field_singleton_sub_fields_schema(
                     discriminator_models_refs[discriminator_value] = discriminator_model_ref['$ref']
 
             s['discriminator'] = {
-                'propertyName': field.discriminator_alias if by_alias else field.discriminator_key,
+                'propertyName': field.discriminator_alias,
                 'mapping': discriminator_models_refs,
             }
 
@@ -838,7 +839,7 @@ def field_singleton_schema(  # noqa: C901 (ignore complexity)
 
     Take a single Pydantic ``ModelField``, and return its schema and any additional definitions from sub-models.
     """
-    from pydantic.v1.main import BaseModel
+    from .main import BaseModel
 
     definitions: Dict[str, Any] = {}
     nested_models: Set[str] = set()
@@ -974,7 +975,7 @@ def multitypes_literal_field_for_schema(values: Tuple[Any, ...], field: ModelFie
 
 
 def encode_default(dft: Any) -> Any:
-    from pydantic.v1.main import BaseModel
+    from .main import BaseModel
 
     if isinstance(dft, BaseModel) or is_dataclass(dft):
         dft = cast('dict[str, Any]', pydantic_encoder(dft))
@@ -1090,7 +1091,7 @@ def get_annotation_with_constraints(annotation: Any, field_info: FieldInfo) -> T
             if issubclass(type_, (SecretStr, SecretBytes)):
                 attrs = ('max_length', 'min_length')
 
-                def constraint_func(**kw: Any) -> Type[Any]:  # noqa: F811
+                def constraint_func(**kw: Any) -> Type[Any]:
                     return type(type_.__name__, (type_,), kw)
 
             elif issubclass(type_, str) and not issubclass(type_, (EmailStr, AnyUrl)):

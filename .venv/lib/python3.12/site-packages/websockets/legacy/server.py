@@ -45,8 +45,8 @@ from ..headers import (
 )
 from ..http import USER_AGENT
 from ..protocol import State
-from ..typing import ExtensionHeader, LoggerLike, Origin, Subprotocol
-from .compatibility import asyncio_timeout, loop_if_py_lt_38
+from ..typing import ExtensionHeader, LoggerLike, Origin, StatusLike, Subprotocol
+from .compatibility import asyncio_timeout
 from .handshake import build_response, check_request
 from .http import read_request
 from .protocol import WebSocketCommonProtocol
@@ -57,7 +57,7 @@ __all__ = ["serve", "unix_serve", "WebSocketServerProtocol", "WebSocketServer"]
 
 HeadersLikeOrCallable = Union[HeadersLike, Callable[[str, Headers], HeadersLike]]
 
-HTTPResponse = Tuple[http.HTTPStatus, HeadersLike, bytes]
+HTTPResponse = Tuple[StatusLike, HeadersLike, bytes]
 
 
 class WebSocketServerProtocol(WebSocketCommonProtocol):
@@ -170,10 +170,6 @@ class WebSocketServerProtocol(WebSocketCommonProtocol):
                         available_subprotocols=self.available_subprotocols,
                         extra_headers=self.extra_headers,
                     )
-            # Remove this branch when dropping support for Python < 3.8
-            # because CancelledError no longer inherits Exception.
-            except asyncio.CancelledError:  # pragma: no cover
-                raise
             except asyncio.TimeoutError:  # pragma: no cover
                 raise
             except ConnectionError:
@@ -231,7 +227,7 @@ class WebSocketServerProtocol(WebSocketCommonProtocol):
 
                 self.write_http_response(status, headers, body)
                 self.logger.info(
-                    "connection failed (%d %s)", status.value, status.phrase
+                    "connection rejected (%d %s)", status.value, status.phrase
                 )
                 await self.close_transport()
                 return
@@ -353,7 +349,7 @@ class WebSocketServerProtocol(WebSocketCommonProtocol):
             request_headers: request headers.
 
         Returns:
-            Optional[Tuple[http.HTTPStatus, HeadersLike, bytes]]: :obj:`None`
+            Optional[Tuple[StatusLike, HeadersLike, bytes]]: :obj:`None`
             to continue the WebSocket handshake normally.
 
             An HTTP response, represented by a 3-uple of the response status,
@@ -765,18 +761,13 @@ class WebSocketServer:
         # Stop accepting new connections.
         self.server.close()
 
-        # Wait until self.server.close() completes.
-        await self.server.wait_closed()
-
         # Wait until all accepted connections reach connection_made() and call
         # register(). See https://bugs.python.org/issue34852 for details.
-        await asyncio.sleep(0, **loop_if_py_lt_38(self.get_loop()))
+        await asyncio.sleep(0)
 
         if close_connections:
-            # Close OPEN connections with status code 1001. Since the server was
-            # closed, handshake() closes OPENING connections with an HTTP 503
-            # error. Wait until all connections are closed.
-
+            # Close OPEN connections with close code 1001. After server.close(),
+            # handshake() closes OPENING connections with an HTTP 503 error.
             close_tasks = [
                 asyncio.create_task(websocket.close(1001))
                 for websocket in self.websockets
@@ -784,18 +775,16 @@ class WebSocketServer:
             ]
             # asyncio.wait doesn't accept an empty first argument.
             if close_tasks:
-                await asyncio.wait(
-                    close_tasks,
-                    **loop_if_py_lt_38(self.get_loop()),
-                )
+                await asyncio.wait(close_tasks)
 
-        # Wait until all connection handlers are complete.
+        # Wait until all TCP connections are closed.
+        await self.server.wait_closed()
 
+        # Wait until all connection handlers terminate.
         # asyncio.wait doesn't accept an empty first argument.
         if self.websockets:
             await asyncio.wait(
-                [websocket.handler_task for websocket in self.websockets],
-                **loop_if_py_lt_38(self.get_loop()),
+                [websocket.handler_task for websocket in self.websockets]
             )
 
         # Tell wait_closed() to return.
@@ -954,7 +943,7 @@ class Serve:
             It defaults to ``"Python/x.y.z websockets/X.Y"``.
             Setting it to :obj:`None` removes the header.
         process_request (Optional[Callable[[str, Headers], \
-            Awaitable[Optional[Tuple[http.HTTPStatus, HeadersLike, bytes]]]]]):
+            Awaitable[Optional[Tuple[StatusLike, HeadersLike, bytes]]]]]):
             Intercept HTTP request before the opening handshake.
             See :meth:`~WebSocketServerProtocol.process_request` for details.
         select_subprotocol: Select a subprotocol supported by the client.

@@ -11,6 +11,8 @@ import threading
 from types import TracebackType
 from typing import Any, Callable, Optional, Sequence, Type
 
+from websockets.frames import CloseCode
+
 from ..extensions.base import ServerExtensionFactory
 from ..extensions.permessage_deflate import enable_server_permessage_deflate
 from ..headers import validate_subprotocols
@@ -19,7 +21,6 @@ from ..http11 import Request, Response
 from ..protocol import CONNECTING, OPEN, Event
 from ..server import ServerProtocol
 from ..typing import LoggerLike, Origin, Subprotocol
-from .compatibility import socket_create_server
 from .connection import Connection
 from .utils import Deadline
 
@@ -401,9 +402,9 @@ def serve(
         if unix:
             if path is None:
                 raise TypeError("missing path argument")
-            sock = socket_create_server(path, family=socket.AF_UNIX)
+            sock = socket.create_server(path, family=socket.AF_UNIX)
         else:
-            sock = socket_create_server((host, port))
+            sock = socket.create_server((host, port))
     else:
         if path is not None:
             raise TypeError("path and sock arguments are incompatible")
@@ -498,7 +499,7 @@ def serve(
             handler(connection)
         except Exception:
             protocol.logger.error("connection handler failed", exc_info=True)
-            connection.close(1011)
+            connection.close(CloseCode.INTERNAL_ERROR)
         else:
             connection.close()
 

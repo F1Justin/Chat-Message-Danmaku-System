@@ -11,7 +11,7 @@ from types import TracebackType
 from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Type, Union
 
 from ..exceptions import ConnectionClosed, ConnectionClosedOK, ProtocolError
-from ..frames import DATA_OPCODES, BytesLike, Frame, Opcode, prepare_ctrl
+from ..frames import DATA_OPCODES, BytesLike, CloseCode, Frame, Opcode, prepare_ctrl
 from ..http11 import Request, Response
 from ..protocol import CLOSED, OPEN, Event, Protocol, State
 from ..typing import Data, LoggerLike, Subprotocol
@@ -22,8 +22,6 @@ from .utils import Deadline
 __all__ = ["Connection"]
 
 logger = logging.getLogger(__name__)
-
-BUFSIZE = 65536
 
 
 class Connection:
@@ -38,6 +36,8 @@ class Connection:
     :class:`~websockets.sync.server.ServerConnection`.
 
     """
+
+    recv_bufsize = 65536
 
     def __init__(
         self,
@@ -141,7 +141,10 @@ class Connection:
         exc_value: Optional[BaseException],
         traceback: Optional[TracebackType],
     ) -> None:
-        self.close(1000 if exc_type is None else 1011)
+        if exc_type is None:
+            self.close()
+        else:
+            self.close(CloseCode.INTERNAL_ERROR)
 
     def __iter__(self) -> Iterator[Data]:
         """
@@ -372,13 +375,16 @@ class Connection:
                 # We're half-way through a fragmented message and we can't
                 # complete it. This makes the connection unusable.
                 with self.send_context():
-                    self.protocol.fail(1011, "error in fragmented message")
+                    self.protocol.fail(
+                        CloseCode.INTERNAL_ERROR,
+                        "error in fragmented message",
+                    )
                 raise
 
         else:
             raise TypeError("data must be bytes, str, or iterable")
 
-    def close(self, code: int = 1000, reason: str = "") -> None:
+    def close(self, code: int = CloseCode.NORMAL_CLOSURE, reason: str = "") -> None:
         """
         Perform the closing handshake.
 
@@ -399,7 +405,10 @@ class Connection:
             # to terminate after calling a method that sends a close frame.
             with self.send_context():
                 if self.send_in_progress:
-                    self.protocol.fail(1011, "close during fragmented message")
+                    self.protocol.fail(
+                        CloseCode.INTERNAL_ERROR,
+                        "close during fragmented message",
+                    )
                 else:
                     self.protocol.send_close(code, reason)
         except ConnectionClosed:
@@ -526,7 +535,7 @@ class Connection:
                 try:
                     if self.close_deadline is not None:
                         self.socket.settimeout(self.close_deadline.timeout())
-                    data = self.socket.recv(BUFSIZE)
+                    data = self.socket.recv(self.recv_bufsize)
                 except Exception as exc:
                     if self.debug:
                         self.logger.debug("error while receiving data", exc_info=True)

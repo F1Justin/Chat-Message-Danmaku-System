@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import warnings
-from typing import TYPE_CHECKING, Any, Callable, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Callable, Type, TypeVar, Union
 
 from typing_extensions import deprecated
 
@@ -17,20 +17,19 @@ if not TYPE_CHECKING:
 
 __all__ = 'parse_obj_as', 'schema_of', 'schema_json_of'
 
-NameFactory = Union[str, Callable[[type[Any]], str]]
+NameFactory = Union[str, Callable[[Type[Any]], str]]
 
 
 T = TypeVar('T')
 
 
 @deprecated(
-    '`parse_obj_as` is deprecated. Use `pydantic.TypeAdapter.validate_python` instead.',
-    category=None,
+    'parse_obj_as is deprecated. Use pydantic.TypeAdapter.validate_python instead.', category=PydanticDeprecatedSince20
 )
 def parse_obj_as(type_: type[T], obj: Any, type_name: NameFactory | None = None) -> T:
     warnings.warn(
-        '`parse_obj_as` is deprecated. Use `pydantic.TypeAdapter.validate_python` instead.',
-        category=PydanticDeprecatedSince20,
+        'parse_obj_as is deprecated. Use pydantic.TypeAdapter.validate_python instead.',
+        DeprecationWarning,
         stacklevel=2,
     )
     if type_name is not None:  # pragma: no cover
@@ -43,8 +42,7 @@ def parse_obj_as(type_: type[T], obj: Any, type_name: NameFactory | None = None)
 
 
 @deprecated(
-    '`schema_of` is deprecated. Use `pydantic.TypeAdapter.json_schema` instead.',
-    category=None,
+    'schema_of is deprecated. Use pydantic.TypeAdapter.json_schema instead.', category=PydanticDeprecatedSince20
 )
 def schema_of(
     type_: Any,
@@ -56,9 +54,7 @@ def schema_of(
 ) -> dict[str, Any]:
     """Generate a JSON schema (as dict) for the passed model or dynamically generated one."""
     warnings.warn(
-        '`schema_of` is deprecated. Use `pydantic.TypeAdapter.json_schema` instead.',
-        category=PydanticDeprecatedSince20,
-        stacklevel=2,
+        'schema_of is deprecated. Use pydantic.TypeAdapter.json_schema instead.', DeprecationWarning, stacklevel=2
     )
     res = TypeAdapter(type_).json_schema(
         by_alias=by_alias,
@@ -79,8 +75,7 @@ def schema_of(
 
 
 @deprecated(
-    '`schema_json_of` is deprecated. Use `pydantic.TypeAdapter.json_schema` instead.',
-    category=None,
+    'schema_json_of is deprecated. Use pydantic.TypeAdapter.json_schema instead.', category=PydanticDeprecatedSince20
 )
 def schema_json_of(
     type_: Any,
@@ -93,9 +88,7 @@ def schema_json_of(
 ) -> str:
     """Generate a JSON schema (as JSON) for the passed model or dynamically generated one."""
     warnings.warn(
-        '`schema_json_of` is deprecated. Use `pydantic.TypeAdapter.json_schema` instead.',
-        category=PydanticDeprecatedSince20,
-        stacklevel=2,
+        'schema_json_of is deprecated. Use pydantic.TypeAdapter.json_schema instead.', DeprecationWarning, stacklevel=2
     )
     return json.dumps(
         schema_of(type_, title=title, by_alias=by_alias, ref_template=ref_template, schema_generator=schema_generator),

@@ -1,155 +1,142 @@
-# 群聊消息弹幕系统 (Chat Message Danmaku System)
+# 群聊消息弹幕系统
 
-这是一个将群聊消息转换为弹幕显示在大屏幕上的应用程序。该程序从PostgreSQL数据库实时获取群聊消息，并通过WebSocket将其作为弹幕发送到前端页面，可与OBS等直播软件结合使用。
+将群聊消息实时转换为弹幕显示，可与 OBS 等直播软件结合使用。
 
-## 功能特点
+## ✨ 特性
 
-- 从数据库实时获取群聊消息
-- 支持选择特定群聊进行监听
-- 显示最近的消息历史
-- 转换消息为HTML弹幕
-- WebSocket实时推送
-- 支持GPU加速的弹幕动画
-- 可调整弹幕显示效果
-- 兼容OBS浏览器源
-- 平滑的弹幕动画，确保弹幕完整穿过屏幕
-- 通过消息参数控制弹幕样式和位置
+- **实时推送**：基于 PostgreSQL LISTEN/NOTIFY，延迟 <50ms
+- **Canvas 渲染**：高性能弹幕引擎，支持高密度显示
+- **多群监听**：支持同时监听多个群聊
+- **样式控制**：通过消息参数控制颜色和位置
+- **OBS 兼容**：透明背景，直接作为浏览器源使用
 
-## 系统要求
+## 🛠️ 技术栈
 
-- Python 3.7+
-- PostgreSQL数据库
-- 现代浏览器（支持WebSocket和Web Animation API）
+| 组件 | 技术 |
+|------|------|
+| 后端 | FastAPI + asyncpg + SQLAlchemy |
+| 前端 | Canvas 2D + WebSocket |
+| 数据库 | PostgreSQL (LISTEN/NOTIFY) |
+| 配置 | Pydantic Settings |
 
-## 安装
+## 📦 安装
 
-1. 克隆此仓库：
-   ```
-   git clone https://github.com/yourusername/Message-to-danmuku.git
-   cd Message-to-danmuku
-   ```
+```bash
+# 克隆仓库
+git clone https://github.com/yourusername/Message-to-danmuku.git
+cd Message-to-danmuku
 
-2. 安装依赖：
-   ```
-   pip install -r requirements.txt
-   ```
+# 安装依赖
+pip install -r requirements.txt
+```
 
-## 配置
+## ⚙️ 配置
 
-本项目使用环境变量管理敏感配置信息：
+### 1. 环境变量
 
-1. 复制`.env.example`文件并重命名为`.env`：
-   ```
-   cp .env.example .env
-   ```
+创建 `.env` 文件：
 
-2. 编辑`.env`文件，必须填入您的数据库连接信息：
-   ```
-   DB_USER=your_database_username
-   DB_PASSWORD=your_database_password
-   DB_HOST=your_database_host
-   DB_PORT=5432
-   DB_NAME=your_database_name
-   ```
+```env
+# 数据库配置 (必填)
+DB_USER=your_username
+DB_PASSWORD=your_password
+DB_HOST=your_host
+DB_PORT=5432
+DB_NAME=your_database
 
-3. 所有标记为必须的环境变量都必须设置，否则应用将无法启动
+# 应用配置 (可选)
+APP_HOST=127.0.0.1
+APP_PORT=8000
+LOG_LEVEL=INFO
+```
 
-本项目默认与NoneBot聊天记录插件兼容，使用以下表：
-- `nonebot_plugin_chatrecorder_messagerecord`（消息记录表）
-- `nonebot_plugin_session_orm_sessionmodel`（会话信息表）
+### 2. 数据库触发器
 
-如果您使用不同的数据库结构，请相应修改`app.py`中的模型定义。
+在 PostgreSQL 中执行触发器脚本以启用实时推送：
 
-## 使用方法
+```bash
+psql -h <host> -U <user> -d <database> -f migrations/001_create_notify_trigger.sql
+```
 
-1. 启动应用程序：
-   ```
-   python app.py
-   ```
+或在数据库管理工具中执行 `migrations/001_create_notify_trigger.sql` 的内容。
 
-2. 服务器将在`http://localhost:8000`上运行
+## 🚀 启动
 
-3. 在浏览器中访问该地址，或在OBS中添加浏览器源
+```bash
+# 方式 1：直接运行
+python app.py
 
-4. 从界面选择要监听的群聊，点击"监听该群"按钮
+# 方式 2：使用启动脚本
+./start.sh        # 正常启动
+./start.sh dev    # 开发模式 (热重载)
+./start.sh stop   # 停止服务
+```
 
-5. 点击"显示最近消息"可以查看该群最近的消息记录
+访问：
+- **弹幕页面**：http://localhost:8000
+- **控制面板**：http://localhost:8000/control
 
-6. 现在，该群的新消息将自动显示为弹幕
+## 🎨 弹幕样式控制
 
-## 自定义
+在消息中添加关键词控制弹幕样式：
 
-通过页面上的控制面板，您可以：
-- 更改动画方式（Transform或Left）
-- 调整最大弹幕数量
-- 清空当前弹幕
-- 重新连接WebSocket
+### 位置
+| 关键词 | 效果 |
+|--------|------|
+| `居中` | 顶部居中固定 |
+| `下居中` | 底部居中固定 |
 
-## 技术架构
+### 颜色
+| 关键词 | 颜色 |
+|--------|------|
+| `红` | 🔴 #FF3B2F |
+| `橙` | 🟠 #FF9500 |
+| `黄` | 🟡 #FFCC02 |
+| `绿` | 🟢 #35C759 |
+| `蓝` | 🔵 #31ADE6 |
+| `靛` | 🟣 #5856D7 |
+| `紫` | 🟣 #AF52DE |
+| `灰` | ⚪ #9E9E9E |
 
-- 后端：FastAPI + SQLAlchemy + asyncpg
-- 前端：HTML + JavaScript + WebSocket
-- 动画：CSS动画 + Transform属性
+### 示例
+```
+重要公告 居中 红     → 顶部居中显示红色文字
+欢迎新人 下居中 绿   → 底部居中显示绿色文字
+普通消息 蓝         → 滚动显示蓝色文字
+```
 
-## 动画实现
+## 📁 项目结构
 
-弹幕动画使用CSS动画实现，具有以下特点：
-- 使用CSS `transform` 属性实现平滑的动画效果
-- 弹幕从屏幕右侧完整进入，穿过整个屏幕后再消失
-- 动画持续时间根据文本长度自动调整，确保阅读体验
-- 支持固定位置（顶部/底部居中）和滚动弹幕两种模式
-- 防止弹幕在移动到屏幕左侧时提前消失
+```
+Message-to-danmuku/
+├── app.py                 # 主应用程序
+├── config.py              # Pydantic 配置管理
+├── connection_manager.py  # WebSocket 连接管理器
+├── config.json            # 运行时配置 (群别名等)
+├── requirements.txt       # Python 依赖
+├── start.sh               # 启动脚本
+├── migrations/
+│   └── 001_create_notify_trigger.sql  # 数据库触发器
+├── templates/
+│   ├── danmaku.html       # 弹幕显示页面 (Canvas)
+│   └── control.html       # 控制面板
+└── static/                # 静态资源目录
+```
 
-## 消息参数控制
+## 🔧 数据库兼容性
 
-系统支持通过在消息中添加特定参数来控制弹幕的样式和位置。用户可以在发送消息时添加以下参数：
+本项目默认与 [NoneBot 聊天记录插件](https://github.com/noneplugin/nonebot-plugin-chatrecorder) 兼容：
 
-### 位置控制
-在消息后添加以下关键词可以控制弹幕的显示位置：
-- `居中` - 将弹幕固定在屏幕顶部中央
-- `下居中` - 将弹幕固定在屏幕底部中央
+- `nonebot_plugin_chatrecorder_messagerecord`
+- `nonebot_plugin_session_orm_sessionmodel`
 
-### 颜色控制
-在消息后添加以下颜色关键词可以改变弹幕颜色：
-- `红` - 鲜红色 (#FF3B2F)
-- `橙` - 橙色 (#FF9500)
-- `黄` - 黄色 (#FFCC02)
-- `绿` - 绿色 (#35C759)
-- `蓝` - 蓝色 (#31ADE6)
-- `靛` - 靛青色 (#5856D7)
-- `紫` - 紫色 (#AF52DE)
-- `灰` - 中性灰色 (#9E9E9E)
+如使用其他数据库结构，请修改 `app.py` 中的模型定义。
 
-### 使用示例
-- `你好 红` - 显示红色的"你好"弹幕
-- `通知 居中 黄` - 在屏幕顶部居中显示黄色的"通知"弹幕
-- `重要提醒 下居中 红` - 在屏幕底部居中显示红色的"重要提醒"弹幕
+## 🔒 安全
 
-系统会自动识别这些参数并应用相应的样式，同时从显示内容中移除这些参数。对于深色弹幕（如靛青色、紫色、绿色和蓝色），系统会自动添加白色描边以提高可读性。
+- 默认仅允许本机访问 (`127.0.0.1`, `::1`, `localhost`)
+- WebSocket 和 HTTP 均有访问限制
 
-## 注意事项
+## 📄 许可证
 
-- 本项目处理了UTC与本地时区的差异，确保消息时间正确显示
-  - 数据库中的时间以UTC时间存储
-  - 应用程序在查询时会自动将本地时间（UTC+8）转换为UTC
-  - 显示时会将UTC时间转回本地时间
-- 为提高性能，使用了缓存减少数据库查询次数
-- 弹幕动画使用CSS transform实现，确保在各种设备上的平滑表现
-
-## 贡献指南
-
-欢迎贡献代码或提出建议！请遵循以下步骤：
-
-1. Fork本仓库
-2. 创建您的特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交您的更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启一个Pull Request
-
-## 问题反馈
-
-如果您发现任何问题或有改进建议，请在GitHub Issues中提出，或直接联系项目维护者。
-
-## 许可证
-
-本项目采用MIT许可证，详情请参阅[LICENSE](LICENSE)文件。 
+MIT License - 详见 [LICENSE](LICENSE)

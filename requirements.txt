@@ -1,7 +1,19 @@
+# Web 框架
 fastapi==0.104.1
 uvicorn==0.23.2
+
+# 模板引擎
 jinja2==3.1.2
+
+# 数据库
 sqlalchemy==2.0.23
-asyncpg==0.28.0
-websockets==11.0.3
-python-dotenv==1.0.0 
+asyncpg==0.29.0
+greenlet==3.0.3
+
+# WebSocket
+websockets==12.0
+
+# 配置管理
+python-dotenv==1.0.0
+pydantic==2.5.0
+pydantic-settings==2.1.0

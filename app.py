@@ -1,57 +1,56 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Query, Body
+"""
+群聊消息弹幕系统
+使用 PostgreSQL LISTEN/NOTIFY 实现实时事件驱动
+"""
+
+import asyncio
+import json
+import logging
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+import asyncpg
+import uvicorn
+from fastapi import Body, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-import uvicorn
-import asyncio
-import json
-import sqlalchemy
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from sqlalchemy import Column, Integer, String, Text, DateTime, select, JSON, ForeignKey, join, func, and_, desc
-from datetime import datetime, timedelta
-import os
-from dotenv import load_dotenv
-import sys
-import logging
-from typing import List, Dict, Tuple, Any, Optional
-import time
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, select
+from sqlalchemy.dialects.postgresql import JSON
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
-# 加载环境变量
-load_dotenv()
+from config import get_app_settings, get_db_settings, get_runtime_config
+from connection_manager import get_connection_manager
 
-# 日志配置：默认 INFO，可通过环境变量 LOG_LEVEL 调整（DEBUG/INFO/WARNING/ERROR）
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
+# ============================================================
+# 配置初始化
+# ============================================================
 
+settings = get_app_settings()
+db_settings = get_db_settings()
+runtime_config = get_runtime_config()
+
+# 配置日志
+logging.basicConfig(
+    level=getattr(logging, settings.log_level, logging.INFO),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# ============================================================
 # 数据库配置
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT")
-DB_NAME = os.getenv("DB_NAME")
+# ============================================================
 
-# 检查必要的环境变量
-required_env_vars = ["DB_USER", "DB_PASSWORD", "DB_HOST", "DB_NAME"]
-missing_vars = [var for var in required_env_vars if not os.getenv(var)]
-if missing_vars:
-    print(f"错误: 缺少必要的环境变量: {', '.join(missing_vars)}")
-    print("请创建.env文件或设置环境变量")
-    sys.exit(1)
-
-# 设置默认端口
-DB_PORT = DB_PORT or "5432"
-
-SQLALCHEMY_DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-
-# 创建异步引擎
-engine = create_async_engine(SQLALCHEMY_DATABASE_URL)
+engine = create_async_engine(db_settings.async_url, echo=False)
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 Base = declarative_base()
 
-# 定义会话模型 - 对应 nonebot_plugin_session_orm_sessionmodel
+
 class SessionModel(Base):
+    """会话模型 - 对应 nonebot_plugin_session_orm_sessionmodel"""
     __tablename__ = "nonebot_plugin_session_orm_sessionmodel"
     
     id = Column(Integer, primary_key=True, index=True)
@@ -59,161 +58,249 @@ class SessionModel(Base):
     bot_type = Column(String(32), nullable=False)
     platform = Column(String(32), nullable=False)
     level = Column(Integer, nullable=False)
-    id1 = Column(String(64), nullable=False)  # 一般是用户ID
-    id2 = Column(String(64), nullable=False)  # 如果level=2，这个是群ID
+    id1 = Column(String(64), nullable=False)  # 用户ID
+    id2 = Column(String(64), nullable=False)  # 群ID (level=2时)
     id3 = Column(String(64), nullable=False)
     
-    # 定义反向关系
     messages = relationship("MessageRecord", back_populates="session")
 
-# 定义消息记录模型 - 对应 nonebot_plugin_chatrecorder_messagerecord
+
 class MessageRecord(Base):
+    """消息记录模型 - 对应 nonebot_plugin_chatrecorder_messagerecord"""
     __tablename__ = "nonebot_plugin_chatrecorder_messagerecord"
     
     id = Column(Integer, primary_key=True, index=True)
-    session_persist_id = Column(Integer, ForeignKey("nonebot_plugin_session_orm_sessionmodel.id"), nullable=False)
-    time = Column(DateTime, nullable=False)
+    session_persist_id = Column(
+        Integer, 
+        ForeignKey("nonebot_plugin_session_orm_sessionmodel.id"), 
+        nullable=False
+    )
+    time = Column(DateTime(timezone=True), nullable=False)
     type = Column(String(32), nullable=False)
     message_id = Column(String(255), nullable=False)
     message = Column(JSON, nullable=False)
     plain_text = Column(Text, nullable=False)
     
-    # 定义外键关系
     session = relationship("SessionModel", back_populates="messages")
 
-app = FastAPI()
+
+# ============================================================
+# PostgreSQL LISTEN/NOTIFY 监听器
+# ============================================================
+
+class MessageListener:
+    """
+    PostgreSQL LISTEN/NOTIFY 消息监听器
+    实时监听数据库消息插入事件
+    """
+    
+    def __init__(self):
+        self._connection: Optional[asyncpg.Connection] = None
+        self._running = False
+        self._manager = get_connection_manager()
+    
+    async def start(self) -> None:
+        """启动监听器"""
+        if self._running:
+            logger.warning("监听器已在运行")
+            return
+        
+        try:
+            # 创建独立的数据库连接用于监听
+            self._connection = await asyncpg.connect(db_settings.dsn)
+            
+            # 注册监听器
+            await self._connection.add_listener("new_message", self._handle_notification)
+            
+            self._running = True
+            logger.info("PostgreSQL LISTEN/NOTIFY 监听器已启动")
+            
+        except Exception as e:
+            logger.error(f"启动监听器失败: {e}")
+            raise
+    
+    async def stop(self) -> None:
+        """停止监听器"""
+        self._running = False
+        
+        if self._connection:
+            try:
+                await self._connection.remove_listener("new_message", self._handle_notification)
+                await self._connection.close()
+                logger.info("监听器已停止")
+            except Exception as e:
+                logger.error(f"停止监听器时出错: {e}")
+            finally:
+                self._connection = None
+    
+    async def _handle_notification(
+        self, 
+        connection: asyncpg.Connection,
+        pid: int,
+        channel: str,
+        payload: str
+    ) -> None:
+        """处理数据库通知"""
+        try:
+            data = json.loads(payload)
+            message_id = data.get("id")
+            session_persist_id = data.get("session_persist_id")
+            
+            logger.debug(f"收到新消息通知: id={message_id}, session={session_persist_id}")
+            
+            # 从数据库获取完整的消息信息
+            await self._fetch_and_broadcast_message(message_id)
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"解析通知负载失败: {e}, payload={payload}")
+        except Exception as e:
+            logger.error(f"处理通知时出错: {e}")
+    
+    async def _fetch_and_broadcast_message(self, message_id: int) -> None:
+        """获取消息详情并广播"""
+        async with async_session() as session:
+            query = (
+                select(MessageRecord, SessionModel)
+                .join(SessionModel, MessageRecord.session_persist_id == SessionModel.id)
+                .where(MessageRecord.id == message_id)
+            )
+            result = await session.execute(query)
+            row = result.first()
+            
+            if not row:
+                logger.warning(f"未找到消息: id={message_id}")
+                return
+            
+            message, session_model = row
+            
+            # 处理消息内容
+            content = self._process_content(message.plain_text)
+            
+            # 获取时间（确保是 UTC）
+            message_time = message.time
+            if message_time.tzinfo is None:
+                # 如果是 naive datetime，假设是 UTC
+                message_time = message_time.replace(tzinfo=timezone.utc)
+            
+            # 缓存 session 映射
+            self._manager.cache_session_mapping(
+                str(session_model.id), 
+                str(session_model.id2)
+            )
+            
+            # 广播弹幕
+            await self._manager.broadcast_danmaku(
+                group_id=session_model.id2,
+                user_id=session_model.id1,
+                content=content,
+                message_id=message.message_id,
+                timestamp=message_time
+            )
+    
+    @staticmethod
+    def _process_content(content: str) -> str:
+        """处理消息内容，去除可能的前缀"""
+        if not isinstance(content, str):
+            return str(content)
+        
+        # 去除 "用户: 消息" 格式的前缀
+        if ": " in content and content.count(": ") == 1:
+            return content.split(": ", 1)[1]
+        elif ":" in content and content.count(":") == 1:
+            parts = content.split(":", 1)
+            # 避免分割时间格式
+            if not parts[0].isdigit():
+                return parts[1].lstrip()
+        
+        return content
+
+
+# 全局监听器实例
+message_listener = MessageListener()
+
+
+# ============================================================
+# FastAPI 应用
+# ============================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    # 启动
+    logger.info("=" * 50)
+    logger.info("群聊弹幕系统启动中...")
+    logger.info("=" * 50)
+    
+    # 启动消息监听器
+    await message_listener.start()
+    
+    # 启动统计广播任务
+    stats_task = asyncio.create_task(periodic_stats_broadcast())
+    
+    logger.info(f"\n弹幕页面: http://{settings.host}:{settings.port}")
+    logger.info(f"控制面板: http://{settings.host}:{settings.port}/control")
+    logger.info("=" * 50)
+    
+    yield
+    
+    # 关闭
+    logger.info("正在关闭...")
+    stats_task.cancel()
+    await message_listener.stop()
+    logger.info("系统已关闭")
+
+
+app = FastAPI(lifespan=lifespan)
 
 # 配置模板和静态文件
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# 仅允许本机访问
-ALLOWED_LOCALHOSTS = {"127.0.0.1", "::1", "localhost"}
+
+# ============================================================
+# 中间件
+# ============================================================
 
 @app.middleware("http")
 async def restrict_localhost_middleware(request: Request, call_next):
+    """限制只允许本机访问"""
     client_host = request.client.host if request.client else None
-    if client_host not in ALLOWED_LOCALHOSTS:
+    if client_host not in settings.allowed_hosts:
         return JSONResponse({"detail": "Forbidden"}, status_code=403)
     return await call_next(request)
 
-# 存储活跃的WebSocket连接，及其关联的群聊过滤
-active_connections: List[Tuple[WebSocket, Dict[str, Any]]] = []
 
-# 存储活跃连接的群聊过滤设置
-connection_filters = {}
+# ============================================================
+# 后台任务
+# ============================================================
 
-# 存储session_id到group_id的映射缓存
-session_to_group_map: Dict[str, str] = {}
-
-# 全局过滤状态（用于新连接继承当前选择的群组过滤）
-global_filter_enabled: bool = False
-global_allowed_groups: List[str] = []
-
-# 全局活跃群组ID
-# active_group_id: Optional[str] = None # This will now be more of a UI hint, not a global filter.
-# Still loaded and saved for UI persistence if desired, but not used for filtering new connections.
-
-# 群组别名配置
-group_aliases: Dict[str, str] = {}
-
-# 常用群组列表
-favorite_groups: List[str] = []
-
-# 弹幕速度（秒）
-danmaku_speed: int = 10  # 默认10秒
-
-# 配置文件路径
-CONFIG_FILE = "config.json"
-
-# 加载配置
-def load_config():
-    global group_aliases, favorite_groups, active_group_id, danmaku_speed
-    try:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                group_aliases = config.get('group_aliases', {})
-                favorite_groups = config.get('favorite_groups', [])
-                active_group_id = config.get('active_group_id') # Keep loading for UI hint
-                danmaku_speed = config.get('danmaku_speed', 10)
-                logging.info(f"已加载配置: 别名={len(group_aliases)} 常用群={len(favorite_groups)} 速度={danmaku_speed}s 提示活跃群={active_group_id}")
-        else:
-            logging.info("配置文件不存在，使用默认设置")
-    except Exception as e:
-        logging.error(f"加载配置出错: {e}")
-
-# 保存配置
-def save_config():
-    global danmaku_speed, active_group_id # ensure active_group_id can be saved for UI hint
-    try:
-        config = {
-            'group_aliases': group_aliases,
-            'favorite_groups': favorite_groups,
-            'active_group_id': active_group_id, # Keep saving for UI hint
-            'danmaku_speed': danmaku_speed
-        }
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-        logging.info("配置已保存")
-    except Exception as e:
-        logging.error(f"保存配置出错: {e}")
-
-# 广播统计数据给所有连接
-async def broadcast_stats():
-    stats = {
-        "type": "stats",
-        "connections": len(active_connections),
-    }
-    await broadcast_to_all(json.dumps(stats))
-
-# 广播设置给所有连接
-async def broadcast_setting(setting_key: str, setting_value: Any):
-    """广播单个设置项给所有连接"""
-    message = {
-        "type": "setting_update",
-        "key": setting_key,
-        "value": setting_value
-    }
-    await broadcast_to_all(json.dumps(message))
-    logging.info(f"已广播设置更新: {setting_key}={setting_value}")
-
-# 广播一组设置给所有连接
-async def broadcast_settings_to_all(settings: Dict[str, Any]):
-    message = {
-        "type": "setting_update",
-        "settings": settings
-    }
-    await broadcast_to_all(json.dumps(message))
-    logging.info(f"已广播批量设置更新: {settings}")
-
-# 广播消息给所有连接
-async def broadcast_to_all(message: str):
-    for connection, _ in active_connections:
+async def periodic_stats_broadcast():
+    """定期广播统计信息"""
+    manager = get_connection_manager()
+    while True:
         try:
-            await connection.send_text(message)
+            await asyncio.sleep(10)
+            await manager.broadcast_stats()
+        except asyncio.CancelledError:
+            break
         except Exception as e:
-            print(f"广播消息失败: {e}")
+            logger.error(f"广播统计信息时出错: {e}")
 
-# 广播活跃群组变更消息
-# async def broadcast_group_change(group_id: str): # This function will be removed or significantly changed
-#     """广播群组变更消息到所有连接"""
-#     message = {
-#         "type": "active_group",
-#         "group_id": group_id
-#     }
-#     await broadcast_to_all(json.dumps(message))
-#     print(f"已广播群组变更消息: {group_id}")
 
-# 获取群聊ID
+# ============================================================
+# 辅助函数
+# ============================================================
+
 async def get_group_id_from_session_id(session_id: str) -> Optional[str]:
-    # 尝试从缓存获取
-    if session_id in session_to_group_map:
-        group_id = session_to_group_map[session_id]
-        logging.debug(f"从缓存获取映射: session_id={session_id} -> group_id={group_id}")
-        return group_id
+    """从 session_id 获取 group_id"""
+    manager = get_connection_manager()
     
-    # 如果缓存中没有，从数据库获取
+    # 尝试从缓存获取
+    cached = manager.get_cached_group_id(session_id)
+    if cached:
+        return cached
+    
+    # 从数据库查询
     try:
         async with async_session() as session:
             query = select(SessionModel.id2).where(SessionModel.id == int(session_id))
@@ -221,281 +308,265 @@ async def get_group_id_from_session_id(session_id: str) -> Optional[str]:
             group_id = result.scalar_one_or_none()
             
             if group_id:
-                session_to_group_map[session_id] = group_id
-                logging.debug(f"从数据库获取映射: session_id={session_id} -> group_id={group_id}")
+                manager.cache_session_mapping(session_id, group_id)
                 return group_id
-            else:
-                logging.debug(f"未找到映射: session_id={session_id}")
-                return None
     except Exception as e:
-        logging.error(f"获取群聊ID出错: {e}")
-        return None
+        logger.error(f"获取群聊ID出错: {e}")
+    
+    return None
 
-# 处理WebSocket消息
+
+# ============================================================
+# WebSocket 端点
+# ============================================================
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global active_group_id, danmaku_speed, global_filter_enabled, global_allowed_groups # Declare globals
-
-    initial_ui_hint_group_id = active_group_id 
-    current_danmaku_speed = danmaku_speed # Read global danmaku_speed for initial settings
-
-    # 鉴权：仅允许本机访问 WebSocket
+    """WebSocket 连接处理"""
+    # 安全检查
     client_host = websocket.client.host if websocket.client else None
-    if client_host not in ALLOWED_LOCALHOSTS:
-        try:
-            await websocket.close(code=1008, reason="Forbidden")
-        except Exception:
-            pass
+    if client_host not in settings.allowed_hosts:
+        await websocket.close(code=1008, reason="Forbidden")
         return
-
-    await websocket.accept()
-    logging.info("connection open")
     
-    connection_filter = {
-        "enabled": False,
-        "allowed_groups": []
-    }
+    manager = get_connection_manager()
+    connection = await manager.connect(websocket)
     
     try:
-        active_connections.append((websocket, connection_filter))
-        # 新连接继承全局过滤状态
-        connection_filter["enabled"] = global_filter_enabled
-        connection_filter["allowed_groups"] = list(global_allowed_groups)
-        
-        await websocket.send_text(json.dumps({
+        # 发送初始状态
+        await connection.send_json({
             "type": "connection",
             "message": "连接成功",
             "settings": {
-                "danmaku_speed": current_danmaku_speed # Use the locally captured speed
+                "danmaku_speed": runtime_config.danmaku_speed
             }
-        }))
-        # 将当前全局过滤状态单播给新连接（便于客户端UI与过滤同步）
-        await websocket.send_text(json.dumps({
+        })
+        
+        # 发送当前过滤状态
+        await connection.send_json({
             "type": "broadcast_filter_update",
-            "filter_enabled": global_filter_enabled,
-            "allowed_groups": global_allowed_groups
-        }))
+            "filter_enabled": manager.global_filter_enabled,
+            "allowed_groups": manager.global_allowed_groups
+        })
         
-        if initial_ui_hint_group_id:
-            await websocket.send_text(json.dumps({
+        # 发送上次聚焦的群组提示
+        if runtime_config.active_group_id:
+            await connection.send_json({
                 "type": "last_focused_group_hint",
-                "group_id": initial_ui_hint_group_id
-            }))
+                "group_id": runtime_config.active_group_id
+            })
         
-        await broadcast_stats()
-        
+        # 消息循环
         while True:
-            try:
-                data = await websocket.receive_text()
-                message = json.loads(data)
-                
-                if message["type"] == "command":
-                    action = message.get("action")
-                    if action == "set_groups":
-                        filter_enabled_req = message.get("filter_enabled", False)
-                        session_ids_req = message.get("groups", [])
-                        
-                        logging.info(f"收到 set_groups 命令: 启用={filter_enabled_req}, 群列表(session_ids)={session_ids_req}")
-                        
-                        # 将session_id映射到实际的group_id
-                        target_group_ids = []
-                        for session_id_val in session_ids_req:
-                            group_id_val = await get_group_id_from_session_id(session_id_val)
-                            if group_id_val is not None:
-                                gid_str = str(group_id_val)
-                                if gid_str not in target_group_ids:
-                                    target_group_ids.append(gid_str)
-                        
-                        # 更新所有活动连接的过滤器设置
-                        # 这是关键：确保所有连接（包括主弹幕页和控制面板预览）都采用相同的过滤规则
-                        updated_connection_count = 0
-                        for conn, conn_filter_ref in active_connections: # conn_filter_ref 是对字典的可变引用
-                            conn_filter_ref["enabled"] = filter_enabled_req
-                            conn_filter_ref["allowed_groups"] = target_group_ids # 使用实际的group_id列表
-                            updated_connection_count += 1
-
-                        # 更新全局过滤状态，供后续新连接继承
-                        global_filter_enabled = filter_enabled_req
-                        global_allowed_groups = list(target_group_ids)
-                        
-                        logging.info(f"已为 {updated_connection_count} 个活动连接更新过滤器: enabled={filter_enabled_req}, allowed_group_ids={target_group_ids}")
-                        
-                        # 向发起命令的客户端发送确认
-                        await websocket.send_text(json.dumps({
-                            "type": "command_response", "action": "set_groups", "status": "success",
-                            "message": f"群聊监听已全局{'启用' if filter_enabled_req else '禁用'}, 已选择 {len(target_group_ids)} 个群",
-                            "listened_groups": target_group_ids
-                        }))
-
-                        # 广播过滤器更新给所有连接的客户端 (主要供客户端JS更新其本地状态，如danmaku.html)
-                        # 虽然后端过滤器已经为所有连接更新了，但这个广播对客户端侧的同步仍然有用。
-                        filter_update_payload = {
-                            "type": "broadcast_filter_update",
-                            "filter_enabled": filter_enabled_req,
-                            "allowed_groups": target_group_ids 
-                        }
-                        await broadcast_to_all(json.dumps(filter_update_payload))
-                        logging.info(f"已广播客户端过滤器更新通知: enabled={filter_enabled_req}, groups={target_group_ids}")
-                    elif action == "broadcast_settings":
-                        settings_payload = message.get("settings", {})
-                        if isinstance(settings_payload, dict) and len(settings_payload) > 0:
-                            await broadcast_settings_to_all(settings_payload)
-                            await websocket.send_text(json.dumps({
-                                "type": "command_response",
-                                "action": "broadcast_settings",
-                                "status": "success",
-                                "message": "设置已广播",
-                                "debug_info": {"settings": settings_payload}
-                            }))
-                        else:
-                            await websocket.send_text(json.dumps({
-                                "type": "command_response",
-                                "action": "broadcast_settings",
-                                "status": "error",
-                                "message": "无效的设置"
-                            }))
-                    elif action == "set_active_group":
-                        session_id_param = message.get("group_id")
-                        if session_id_param:
-                            target_group_id_val = await get_group_id_from_session_id(session_id_param)
-                            if target_group_id_val:
-                                connection_filter["enabled"] = True
-                                connection_filter["allowed_groups"] = [str(target_group_id_val)]
-                                logging.info(f"连接 {websocket.client} 监听群: {target_group_id_val}")
-                                
-                                # active_group_id is already global due to declaration at function top
-                                active_group_id = target_group_id_val # Modifies the global active_group_id
-                                save_config()
-
-                                await websocket.send_text(json.dumps({
-                                    "type": "command_response",
-                                    "action": "set_active_group",
-                                    "status": "success",
-                                    "message": f"您现在只监听群组: {target_group_id_val}",
-                                    "listened_groups": [target_group_id_val]
-                                }))
-                            else:
-                                await websocket.send_text(json.dumps({
-                                    "type": "command_response",
-                                    "action": "set_active_group",
-                                    "status": "error",
-                                    "message": "无法获取群组ID"
-                                }))
-                        else:
-                            # Clearing active group for this connection
-                            connection_filter["enabled"] = False
-                            connection_filter["allowed_groups"] = []
-                            # No global active_group_id change when one client clears filter
-                            await websocket.send_text(json.dumps({
-                                    "type": "command_response",
-                                    "action": "set_active_group",
-                                    "status": "success",
-                                    "message": "已清除此连接的群组监听",
-                                    "listened_groups": []
-                            }))
-                            
-                    elif action == "get_active_group":
-                        response_group_id_to_send = None
-                        # active_group_id is already global, so this reads the global value
-                        current_global_hint_for_get = active_group_id 
-                        
-                        if connection_filter["enabled"] and connection_filter["allowed_groups"]:
-                            response_group_id_to_send = connection_filter["allowed_groups"][0]
-                        else:
-                            response_group_id_to_send = current_global_hint_for_get
-                        
-                        await websocket.send_text(json.dumps({
-                            "type": "active_group_info",
-                            "group_id": response_group_id_to_send,
-                            "is_filtering_this_connection": connection_filter["enabled"],
-                            "listened_groups_this_connection": connection_filter["allowed_groups"]
-                        }))
-                    elif action == "set_danmaku_speed":
-                        new_speed = message.get("speed")
-                        try:
-                            speed_val = int(new_speed)
-                            if 5 <= speed_val <= 60:
-                                danmaku_speed = speed_val
-                                save_config()
-                                await broadcast_setting("danmaku_speed", danmaku_speed)
-                                await websocket.send_text(json.dumps({
-                                    "type": "command_response",
-                                    "action": "set_danmaku_speed",
-                                    "status": "success",
-                                    "message": f"弹幕速度已设置为 {danmaku_speed} 秒"
-                                }))
-                            else:
-                                raise ValueError("速度必须在 5 到 60 之间")
-                        except (ValueError, TypeError):
-                            await websocket.send_text(json.dumps({
-                                "type": "command_response",
-                                "action": "set_danmaku_speed",
-                                "status": "error",
-                                "message": "无效的速度值，请输入5到60之间的整数"
-                            }))
-                logging.debug(f"WebSocket loop processed message: {data[:50]}...")
-            except json.JSONDecodeError:
-                logging.warning("Received invalid JSON message")
-            except WebSocketDisconnect:
-                logging.info("WS Disconnected in receive loop, breaking.")
-                break
-            except RuntimeError as re:
-                if "Cannot call \"receive\" once a disconnect message has been received" in str(re):
-                    logging.warning(f"RuntimeError indicating disconnect in loop, breaking: {re}")
-                    break
-                logging.error(f"Other RuntimeError in loop, breaking: {re}", exc_info=True)
-                break 
-            except Exception as e_loop:
-                logging.error(f"Generic error in receive loop, breaking: {e_loop}", exc_info=True)
-                break
-
-    except WebSocketDisconnect as e:
-        logging.info(f"WebSocket connection closed (outer catch). Code: {e.code}, Reason: {e.reason}")
+            data = await websocket.receive_text()
+            await handle_websocket_message(connection, data)
+            
+    except WebSocketDisconnect:
+        logger.info("WebSocket 连接已断开")
     except Exception as e:
-        logging.error(f"Unhandled WebSocket error (outer catch): {str(e)}", exc_info=True)
+        logger.error(f"WebSocket 错误: {e}")
     finally:
-        if (websocket, connection_filter) in active_connections:
-            active_connections.remove((websocket, connection_filter))
-            logging.info(f"Connection removed in finally. Current connections: {len(active_connections)}")
-            # Broadcast stats only if list was modified and is not empty, or handle error if broadcast fails
-            try:
-                await broadcast_stats()
-            except Exception as broadcast_exc:
-                logging.error(f"Error broadcasting stats in finally: {broadcast_exc}")
-        else:
-            logging.info("Connection already removed or was never fully added.")
-        logging.info("Exiting websocket_endpoint handler.")
+        manager.disconnect(connection)
+        await manager.broadcast_stats()
 
-# 主页
+
+async def handle_websocket_message(connection, data: str) -> None:
+    """处理 WebSocket 消息"""
+    try:
+        message = json.loads(data)
+        
+        if message.get("type") != "command":
+            return
+        
+        action = message.get("action")
+        manager = get_connection_manager()
+        
+        if action == "set_groups":
+            await handle_set_groups(connection, message, manager)
+        
+        elif action == "set_active_group":
+            await handle_set_active_group(connection, message)
+        
+        elif action == "get_active_group":
+            await handle_get_active_group(connection)
+        
+        elif action == "set_danmaku_speed":
+            await handle_set_danmaku_speed(connection, message, manager)
+        
+        elif action == "broadcast_settings":
+            await handle_broadcast_settings(connection, message, manager)
+        
+    except json.JSONDecodeError:
+        logger.warning("收到无效的 JSON 消息")
+
+
+async def handle_set_groups(connection, message: dict, manager) -> None:
+    """处理设置监听群组"""
+    filter_enabled = message.get("filter_enabled", False)
+    session_ids = message.get("groups", [])
+    
+    logger.info(f"设置监听群组: enabled={filter_enabled}, sessions={session_ids}")
+    
+    # 转换 session_id 到 group_id
+    target_group_ids = []
+    for session_id in session_ids:
+        group_id = await get_group_id_from_session_id(session_id)
+        if group_id and group_id not in target_group_ids:
+            target_group_ids.append(group_id)
+    
+    # 更新全局过滤器
+    manager.set_global_filter(filter_enabled, target_group_ids)
+    
+    # 发送响应
+    await connection.send_json({
+        "type": "command_response",
+        "action": "set_groups",
+        "status": "success",
+        "message": f"群聊监听已{'启用' if filter_enabled else '禁用'}，已选择 {len(target_group_ids)} 个群",
+        "listened_groups": target_group_ids
+    })
+    
+    # 广播过滤器更新
+    await manager.broadcast_filter_update()
+
+
+async def handle_set_active_group(connection, message: dict) -> None:
+    """处理设置活跃群组"""
+    session_id = message.get("group_id")
+    
+    if session_id:
+        group_id = await get_group_id_from_session_id(session_id)
+        if group_id:
+            connection.filter.enabled = True
+            connection.filter.allowed_groups = {str(group_id)}
+            runtime_config.active_group_id = group_id
+            runtime_config.save()
+            
+            await connection.send_json({
+                "type": "command_response",
+                "action": "set_active_group",
+                "status": "success",
+                "message": f"已设置监听群组: {group_id}",
+                "listened_groups": [group_id]
+            })
+        else:
+            await connection.send_json({
+                "type": "command_response",
+                "action": "set_active_group",
+                "status": "error",
+                "message": "无法获取群组ID"
+            })
+    else:
+        connection.filter.enabled = False
+        connection.filter.allowed_groups = set()
+        await connection.send_json({
+            "type": "command_response",
+            "action": "set_active_group",
+            "status": "success",
+            "message": "已清除群组监听",
+            "listened_groups": []
+        })
+
+
+async def handle_get_active_group(connection) -> None:
+    """处理获取活跃群组"""
+    response_group_id = None
+    
+    if connection.filter.enabled and connection.filter.allowed_groups:
+        response_group_id = next(iter(connection.filter.allowed_groups))
+    else:
+        response_group_id = runtime_config.active_group_id
+    
+    await connection.send_json({
+        "type": "active_group_info",
+        "group_id": response_group_id,
+        "is_filtering_this_connection": connection.filter.enabled,
+        "listened_groups_this_connection": list(connection.filter.allowed_groups)
+    })
+
+
+async def handle_set_danmaku_speed(connection, message: dict, manager) -> None:
+    """处理设置弹幕速度"""
+    try:
+        speed = int(message.get("speed", 10))
+        if runtime_config.set_danmaku_speed(speed):
+            await manager.broadcast_setting("danmaku_speed", speed)
+            await connection.send_json({
+                "type": "command_response",
+                "action": "set_danmaku_speed",
+                "status": "success",
+                "message": f"弹幕速度已设置为 {speed} 秒"
+            })
+        else:
+            raise ValueError("速度必须在 5-60 之间")
+    except (ValueError, TypeError):
+        await connection.send_json({
+            "type": "command_response",
+            "action": "set_danmaku_speed",
+            "status": "error",
+            "message": "无效的速度值，请输入 5-60 之间的整数"
+        })
+
+
+async def handle_broadcast_settings(connection, message: dict, manager) -> None:
+    """处理广播设置"""
+    settings_payload = message.get("settings", {})
+    if isinstance(settings_payload, dict) and settings_payload:
+        await manager.broadcast_to_all({
+            "type": "setting_update",
+            "settings": settings_payload
+        })
+        await connection.send_json({
+            "type": "command_response",
+            "action": "broadcast_settings",
+            "status": "success",
+            "message": "设置已广播"
+        })
+    else:
+        await connection.send_json({
+            "type": "command_response",
+            "action": "broadcast_settings",
+            "status": "error",
+            "message": "无效的设置"
+        })
+
+
+# ============================================================
+# HTTP 端点
+# ============================================================
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
+    """弹幕显示页面"""
     return templates.TemplateResponse("danmaku.html", {"request": request})
 
-# 控制面板
+
 @app.get("/control", response_class=HTMLResponse)
 async def control_panel(request: Request):
+    """控制面板页面"""
     return templates.TemplateResponse("control.html", {"request": request})
 
-# 获取群聊列表
+
 @app.get("/api/groups", response_class=JSONResponse)
 async def get_groups():
+    """获取群聊列表"""
     try:
         async with async_session() as session:
-            # 查询所有群聊会话
-            query = select(SessionModel).where(SessionModel.level == 2).order_by(SessionModel.id)
+            query = (
+                select(SessionModel)
+                .where(SessionModel.level == 2)
+                .order_by(SessionModel.id)
+            )
             result = await session.execute(query)
             groups = result.scalars().all()
             
-            # 使用字典来确保按group_id去重
+            # 去重
             unique_groups = {}
             for group in groups:
                 group_id = group.id2
-                # 如果这个群ID还没有添加过，或者当前session_id更小（优先使用较早的记录）
                 if group_id not in unique_groups or int(group.id) < int(unique_groups[group_id]["id"]):
-                    # 获取群别名
-                    alias = group_aliases.get(str(group_id), "")
-                    # 检查是否为常用群组
-                    is_favorite = str(group.id) in favorite_groups
+                    alias = runtime_config.group_aliases.get(str(group_id), "")
+                    is_favorite = str(group.id) in runtime_config.favorite_groups
                     
                     unique_groups[group_id] = {
                         "id": str(group.id),
@@ -504,332 +575,115 @@ async def get_groups():
                         "is_favorite": is_favorite
                     }
             
-            # 将字典转换为列表
-            group_list = list(unique_groups.values())
+            group_list = sorted(unique_groups.values(), key=lambda x: int(x["id"]))
             
-            # 按id排序
-            group_list.sort(key=lambda x: int(x["id"]))
+            return {"status": "success", "groups": group_list}
             
-            return {
-                "status": "success",
-                "groups": group_list
-                # "active_group_id": active_group_id # Removed global active_group_id from this API response
-            }
     except Exception as e:
-        print(f"获取群聊列表出错: {e}")
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        logger.error(f"获取群聊列表出错: {e}")
+        return {"status": "error", "message": str(e)}
 
-# 获取最近消息
+
 @app.get("/api/recent-messages/{group_id}", response_class=JSONResponse)
 async def get_recent_messages(group_id: str):
+    """获取最近消息"""
     try:
         async with async_session() as session:
-            # 获取群ID
+            # 获取实际的群ID
             group_id_query = select(SessionModel.id2).where(SessionModel.id == int(group_id))
-            group_id_result = await session.execute(group_id_query)
-            actual_group_id = group_id_result.scalar_one_or_none()
+            result = await session.execute(group_id_query)
+            actual_group_id = result.scalar_one_or_none()
             
             if not actual_group_id:
-                return {
-                    "status": "error",
-                    "message": "群聊不存在"
-                }
+                return {"status": "error", "message": "群聊不存在"}
             
             # 查询最近消息
-            query = select(MessageRecord, SessionModel).join(
-                SessionModel, MessageRecord.session_persist_id == SessionModel.id
-            ).where(
-                SessionModel.id2 == actual_group_id,
-                MessageRecord.type == "message",
-                MessageRecord.plain_text != ""
-            ).order_by(
-                MessageRecord.time.desc()
-            ).limit(20)
+            query = (
+                select(MessageRecord, SessionModel)
+                .join(SessionModel, MessageRecord.session_persist_id == SessionModel.id)
+                .where(
+                    SessionModel.id2 == actual_group_id,
+                    MessageRecord.type == "message",
+                    MessageRecord.plain_text != ""
+                )
+                .order_by(MessageRecord.time.desc())
+                .limit(20)
+            )
             
             result = await session.execute(query)
             messages = result.fetchall()
             
-            # 处理消息
             message_list = []
-            for message, session_model in reversed(messages):  # 反转顺序，从旧到新
-                content = message.plain_text
+            for message, session_model in reversed(messages):
+                content = MessageListener._process_content(message.plain_text)
                 
-                # 简单处理一下消息内容，去除可能的前缀
-                if ": " in content and content.count(": ") == 1:
-                    content = content.split(": ", 1)[1]
-                elif ":" in content and content.count(":") == 1:
-                    content = content.split(":", 1)[1]
+                # 统一时间格式
+                msg_time = message.time
+                if msg_time.tzinfo is None:
+                    msg_time = msg_time.replace(tzinfo=timezone.utc)
                 
                 message_list.append({
                     "message_id": message.message_id,
                     "user_id": session_model.id1,
                     "group_id": session_model.id2,
-                    "time": message.time.isoformat(),
+                    "time": msg_time.isoformat(),
                     "content": content
                 })
             
-            return {
-                "status": "success",
-                "messages": message_list
-            }
+            return {"status": "success", "messages": message_list}
+            
     except Exception as e:
-        print(f"获取最近消息出错: {e}")
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        logger.error(f"获取最近消息出错: {e}")
+        return {"status": "error", "message": str(e)}
 
-# 设置群聊别名
+
 @app.post("/api/group-alias", response_class=JSONResponse)
 async def set_group_alias(data: Dict[str, Any] = Body(...)):
+    """设置群聊别名"""
     try:
-        group_id = str(data.get("group_id"))
+        group_id = str(data.get("group_id", ""))
         alias = data.get("alias", "")
         
         if not group_id:
-            return {
-                "status": "error",
-                "message": "缺少群ID参数"
-            }
+            return {"status": "error", "message": "缺少群ID参数"}
         
-        # 更新别名
-        group_aliases[group_id] = alias
+        runtime_config.set_group_alias(group_id, alias)
+        logger.info(f"设置群聊别名: 群ID={group_id}, 别名={alias}")
         
-        # 保存配置
-        save_config()
+        return {"status": "success", "message": "群聊别名已更新"}
         
-        print(f"设置群聊别名: 群ID={group_id}, 别名={alias}")
-        
-        return {
-            "status": "success",
-            "message": "群聊别名已更新"
-        }
     except Exception as e:
-        print(f"设置群聊别名出错: {e}")
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        logger.error(f"设置群聊别名出错: {e}")
+        return {"status": "error", "message": str(e)}
 
-# 设置常用群组
+
 @app.post("/api/favorite-group", response_class=JSONResponse)
 async def set_favorite_group(data: Dict[str, Any] = Body(...)):
+    """设置常用群组"""
     try:
         group_id = data.get("group_id")
         is_favorite = data.get("is_favorite", False)
         
         if not group_id:
-            return {
-                "status": "error",
-                "message": "缺少群组ID"
-            }
+            return {"status": "error", "message": "缺少群组ID"}
         
-        # 更新常用群组
-        if is_favorite and group_id not in favorite_groups:
-            favorite_groups.append(group_id)
-        elif not is_favorite and group_id in favorite_groups:
-            favorite_groups.remove(group_id)
+        runtime_config.toggle_favorite(group_id, is_favorite)
         
-        save_config()
+        return {"status": "success", "message": "常用群组已更新"}
         
-        return {
-            "status": "success",
-            "message": "常用群组已更新"
-        }
     except Exception as e:
-        print(f"设置常用群组出错: {e}")
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        logger.error(f"设置常用群组出错: {e}")
+        return {"status": "error", "message": str(e)}
 
-# 处理接收到的消息
-async def check_for_new_messages():
-    # 获取数据库中最新消息的时间，避免依赖本地系统时间
-    try:
-        async with async_session() as session:
-            query = select(func.max(MessageRecord.time)).select_from(MessageRecord)
-            result = await session.execute(query)
-            latest_time = result.scalar_one_or_none()
-            
-            if latest_time is None:
-                logging.info("数据库中没有消息，使用当前时间")
-                # 如果数据库为空，使用当前时间
-                initial_check_time = datetime.utcnow() - timedelta(hours=1)
-            else:
-                logging.debug(f"数据库最新消息时间: {latest_time} (UTC时间)")
-                # 重要修改：检查数据库时间是否在未来
-                if latest_time > datetime.utcnow():
-                    logging.warning("数据库时间在未来！使用当前时间回退24小时作为初始检查时间")
-                    initial_check_time = datetime.utcnow() - timedelta(hours=24)
-                else:
-                    # 使用数据库中最新消息的时间作为起始检查时间
-                    initial_check_time = latest_time
-    except Exception as e:
-        logging.error(f"获取最新消息时间出错: {e}")
-        # 如果查询出错，使用当前时间
-        initial_check_time = datetime.utcnow() - timedelta(hours=1)
-    
-    last_check_time = initial_check_time
-    logging.info(f"初始检查时间设置为: {last_check_time} (UTC时间)")
-    
-    while True:
-        try:
-            # 输出当前系统时间（东八区）和转换后的UTC时间，用于调试
-            local_now = datetime.now()
-            utc_now = datetime.utcnow()
-            logging.debug(f"当前系统时间: {local_now} (东八区), 转换为UTC: {utc_now}")
-            
-            # 查询自上次检查以来的新消息
-            logging.debug(f"查询 {last_check_time} 之后的消息")
-            
-            async with async_session() as session:
-                # 先查询最新的消息时间，用于后续更新last_check_time
-                latest_time_query = select(func.max(MessageRecord.time)).select_from(MessageRecord)
-                latest_time_result = await session.execute(latest_time_query)
-                db_latest_time = latest_time_result.scalar_one_or_none()
-                
-                if db_latest_time:
-                    logging.debug(f"数据库最新消息时间: {db_latest_time} (UTC时间)")
-                    
-                    # 重要修改：如果数据库时间超前于当前时间，重置查询时间
-                    if db_latest_time > utc_now:
-                        logging.warning(f"数据库时间 {db_latest_time} 超出当前UTC时间 {utc_now}！")
-                        # 如果超过48小时，可能是时区或系统时间问题
-                        if (db_latest_time - utc_now) > timedelta(hours=48):
-                            logging.warning("数据库时间异常！可能是时区设置或系统时间错误")
-                            # 尝试降低查询时间阈值
-                            last_check_time = utc_now - timedelta(minutes=5)
-                            logging.warning(f"已将查询时间阈值降低为 {last_check_time}")
-                
-                # 查询新消息
-                query = select(MessageRecord, SessionModel).join(
-                    SessionModel, MessageRecord.session_persist_id == SessionModel.id
-                ).where(
-                    MessageRecord.time > last_check_time
-                ).order_by(MessageRecord.time)
-                
-                result = await session.execute(query)
-                new_messages = result.fetchall()
-                
-                if new_messages:
-                    logging.debug(f"发现 {len(new_messages)} 条新消息")
-                    
-                    # 处理每条新消息
-                    for i, (message, session) in enumerate(new_messages):
-                        message_time_utc = message.time
-                        message_time_local = message_time_utc + timedelta(hours=8)  # 转换为东八区时间
-                        
-                        logging.debug(f"消息{i+1}时间: {message_time_utc} (UTC) / {message_time_local} (本地), 内容: {message.plain_text[:20]}...")
-                        
-                        # 获取群ID并标准化为字符串
-                        group_id = str(session.id2)
 
-                        # 处理消息内容，移除前缀
-                        content = message.plain_text
-                        # 简单处理一下消息内容，去除可能的前缀
-                        if isinstance(content, str):
-                            if ": " in content and content.count(": ") == 1:
-                                content = content.split(": ", 1)[1]
-                            elif ":" in content and content.count(":") == 1:
-                                # Handle cases like "User:Message" -> "Message"
-                                parts = content.split(":", 1)
-                                # Avoid splitting time format like "17:14:03" if it's the whole message
-                                if not parts[0].isdigit() or (len(parts) > 1 and not parts[1].isdigit()):
-                                    content = parts[1].lstrip() # Use lstrip to remove leading space if any
-
-                        # 调试打印
-                        logging.debug(f"处理新消息: 群={group_id}, 用户={session.id1}, 时间={message_time_utc} (UTC) / {message_time_local} (本地), 内容={str(content)[:20]}...")
-                        
-                        sent_count = 0
-                        for connection, filter_settings in active_connections:
-                            try:
-                                logging.debug(f"连接过滤设置: enabled={filter_settings['enabled']}, allowed_groups={filter_settings['allowed_groups']}, 当前消息群ID={group_id}")
-                                
-                                # 修正的过滤逻辑：
-                                should_send = False
-                                if filter_settings['enabled']:
-                                    if filter_settings['allowed_groups'] and group_id in filter_settings['allowed_groups']:
-                                        should_send = True
-                                    # If enabled but allowed_groups is empty, it means listen to nothing specific from this filter type.
-                                    # However, our UI for "select groups" implies enabled + empty = listen to none of selected.
-                                    # The case of enabled=true and allowed_groups=[] should ideally not happen if UI sends groups when enabling.
-                                    # Let's assume if enabled=true, allowed_groups must be non-empty for a match.
-                                else: # filter_settings['enabled'] is False
-                                    # 修复：如果过滤器未启用，接收所有消息（原始行为）
-                                    should_send = True
-                                    logging.debug(f"过滤器未启用，将发送所有消息（群ID = {group_id}）")
-
-                                if should_send:
-                                    danmaku_message = {
-                                        "type": "danmaku",
-                                        "group_id": group_id,
-                                        "user_id": session.id1,
-                                        "time": message_time_utc.isoformat(),
-                                        "content": content,
-                                        "message_id": message.message_id
-                                    }
-                                    
-                                    await connection.send_text(json.dumps(danmaku_message))
-                                    sent_count += 1
-                                    logging.debug(f"发送弹幕成功: 群={group_id}, 内容={str(content)[:20]}...")
-                            except Exception as e:
-                                logging.error(f"发送消息时出错: {str(e)}")
-                        
-                        logging.debug(f"消息已发送给 {sent_count}/{len(active_connections)} 个连接")
-                    
-                    # 更新最后检查时间（加上1毫秒避免重复获取同一条消息）
-                    # 使用数据库中的最新消息时间，而非本地时间
-                    if db_latest_time and db_latest_time <= utc_now:
-                        last_check_time = db_latest_time + timedelta(milliseconds=1)
-                    else:
-                        # 如果数据库时间异常，使用消息列表中的最后一条消息时间
-                        last_message_time = new_messages[-1][0].time
-                        last_check_time = last_message_time + timedelta(milliseconds=1)
-                    
-                    logging.debug(f"更新最后检查时间为: {last_check_time} (UTC时间)")
-                else:
-                    # 重要修改：如果查询了一段时间都没有消息，间隔性重置查询时间，避免永远等待未来
-                    now = datetime.utcnow()
-                    # 如果上次检查时间超过当前时间5分钟，可能是检测时间阻塞在未来
-                    if last_check_time > now + timedelta(minutes=5):
-                        logging.warning(f"检查时间 {last_check_time} 异常超前，重置为当前时间前1小时")
-                        last_check_time = now - timedelta(hours=1)
-        except Exception as e:
-            logging.error(f"检查新消息时出错: {str(e)}", exc_info=True)
-        
-        # 等待1秒再次检查
-        await asyncio.sleep(1)
-
-# 每30秒发送一次统计信息
-async def send_stats_periodically():
-    while True:
-        try:
-            await broadcast_stats()
-        except Exception as e:
-            print(f"发送统计信息时出错: {str(e)}")
-        await asyncio.sleep(10) # Keep this at 10 seconds as per existing code
-
-@app.on_event("startup")
-async def startup_event():
-    # 加载配置
-    load_config()
-    
-    # 启动后台任务检查新消息
-    asyncio.create_task(check_for_new_messages())
-    # 启动后台任务发送统计信息
-    asyncio.create_task(send_stats_periodically())
-    # 打印应用信息和链接
-    print("\n" + "="*50)
-    print("群聊弹幕系统已启动")
-    print("="*50)
-    print("\n弹幕页面: http://localhost:8000")
-    print("控制面板: http://localhost:8000/control")
-    print("\n使用控制面板选择要监听的群聊")
-    print("="*50)
+# ============================================================
+# 入口
+# ============================================================
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run(
+        "app:app",
+        host=settings.host,
+        port=settings.port,
+        reload=True
+    )

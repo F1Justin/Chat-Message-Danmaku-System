@@ -34,6 +34,7 @@ import http
 from typing import Optional
 
 from . import datastructures, frames, http11
+from .typing import StatusLike
 
 
 __all__ = [
@@ -121,7 +122,7 @@ class ConnectionClosed(WebSocketException):
     @property
     def code(self) -> int:
         if self.rcvd is None:
-            return 1006
+            return frames.CloseCode.ABNORMAL_CLOSURE
         return self.rcvd.code
 
     @property
@@ -330,11 +331,12 @@ class AbortHandshake(InvalidHandshake):
 
     def __init__(
         self,
-        status: http.HTTPStatus,
+        status: StatusLike,
         headers: datastructures.HeadersLike,
         body: bytes = b"",
     ) -> None:
-        self.status = status
+        # If a user passes an int instead of a HTTPStatus, fix it automatically.
+        self.status = http.HTTPStatus(status)
         self.headers = datastructures.Headers(headers)
         self.body = body
 

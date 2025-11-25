@@ -47,13 +47,14 @@ from ..frames import (
     OP_PONG,
     OP_TEXT,
     Close,
+    CloseCode,
     Opcode,
     prepare_ctrl,
     prepare_data,
 )
 from ..protocol import State
 from ..typing import Data, LoggerLike, Subprotocol
-from .compatibility import asyncio_timeout, loop_if_py_lt_38
+from .compatibility import asyncio_timeout
 from .framing import Frame
 
 
@@ -244,7 +245,7 @@ class WebSocketCommonProtocol(asyncio.Protocol):
         self._paused = False
         self._drain_waiter: Optional[asyncio.Future[None]] = None
 
-        self._drain_lock = asyncio.Lock(**loop_if_py_lt_38(loop))
+        self._drain_lock = asyncio.Lock()
 
         # This class implements the data transfer and closing handshake, which
         # are shared between the client-side and the server-side.
@@ -339,7 +340,7 @@ class WebSocketCommonProtocol(asyncio.Protocol):
                 #     write(...); yield from drain()
                 # in a loop would never call connection_lost(), so it
                 # would not see an error when the socket is closed.
-                await asyncio.sleep(0, **loop_if_py_lt_38(self.loop))
+                await asyncio.sleep(0)
         await self._drain_helper()
 
     def connection_open(self) -> None:
@@ -459,7 +460,7 @@ class WebSocketCommonProtocol(asyncio.Protocol):
         if self.state is not State.CLOSED:
             return None
         elif self.close_rcvd is None:
-            return 1006
+            return CloseCode.ABNORMAL_CLOSURE
         else:
             return self.close_rcvd.code
 
@@ -551,7 +552,6 @@ class WebSocketCommonProtocol(asyncio.Protocol):
                 await asyncio.wait(
                     [pop_message_waiter, self.transfer_data_task],
                     return_when=asyncio.FIRST_COMPLETED,
-                    **loop_if_py_lt_38(self.loop),
                 )
             finally:
                 self._pop_message_waiter = None
@@ -682,7 +682,7 @@ class WebSocketCommonProtocol(asyncio.Protocol):
             except (Exception, asyncio.CancelledError):
                 # We're half-way through a fragmented message and we can't
                 # complete it. This makes the connection unusable.
-                self.fail_connection(1011)
+                self.fail_connection(CloseCode.INTERNAL_ERROR)
                 raise
 
             finally:
@@ -727,7 +727,7 @@ class WebSocketCommonProtocol(asyncio.Protocol):
             except (Exception, asyncio.CancelledError):
                 # We're half-way through a fragmented message and we can't
                 # complete it. This makes the connection unusable.
-                self.fail_connection(1011)
+                self.fail_connection(CloseCode.INTERNAL_ERROR)
                 raise
 
             finally:
@@ -737,7 +737,11 @@ class WebSocketCommonProtocol(asyncio.Protocol):
         else:
             raise TypeError("data must be str, bytes-like, or iterable")
 
-    async def close(self, code: int = 1000, reason: str = "") -> None:
+    async def close(
+        self,
+        code: int = CloseCode.NORMAL_CLOSURE,
+        reason: str = "",
+    ) -> None:
         """
         Perform the closing handshake.
 
@@ -987,7 +991,7 @@ class WebSocketCommonProtocol(asyncio.Protocol):
 
         except ProtocolError as exc:
             self.transfer_data_exc = exc
-            self.fail_connection(1002)
+            self.fail_connection(CloseCode.PROTOCOL_ERROR)
 
         except (ConnectionError, TimeoutError, EOFError, ssl.SSLError) as exc:
             # Reading data with self.reader.readexactly may raise:
@@ -998,15 +1002,15 @@ class WebSocketCommonProtocol(asyncio.Protocol):
             #   bytes are available than requested;
             # - ssl.SSLError if the other side infringes the TLS protocol.
             self.transfer_data_exc = exc
-            self.fail_connection(1006)
+            self.fail_connection(CloseCode.ABNORMAL_CLOSURE)
 
         except UnicodeDecodeError as exc:
             self.transfer_data_exc = exc
-            self.fail_connection(1007)
+            self.fail_connection(CloseCode.INVALID_DATA)
 
         except PayloadTooBig as exc:
             self.transfer_data_exc = exc
-            self.fail_connection(1009)
+            self.fail_connection(CloseCode.MESSAGE_TOO_BIG)
 
         except Exception as exc:
             # This shouldn't happen often because exceptions expected under
@@ -1015,7 +1019,7 @@ class WebSocketCommonProtocol(asyncio.Protocol):
             self.logger.error("data transfer failed", exc_info=True)
 
             self.transfer_data_exc = exc
-            self.fail_connection(1011)
+            self.fail_connection(CloseCode.INTERNAL_ERROR)
 
     async def read_message(self) -> Optional[Data]:
         """
@@ -1247,10 +1251,7 @@ class WebSocketCommonProtocol(asyncio.Protocol):
 
         try:
             while True:
-                await asyncio.sleep(
-                    self.ping_interval,
-                    **loop_if_py_lt_38(self.loop),
-                )
+                await asyncio.sleep(self.ping_interval)
 
                 # ping() raises CancelledError if the connection is closed,
                 # when close_connection() cancels self.keepalive_ping_task.
@@ -1269,13 +1270,11 @@ class WebSocketCommonProtocol(asyncio.Protocol):
                     except asyncio.TimeoutError:
                         if self.debug:
                             self.logger.debug("! timed out waiting for keepalive pong")
-                        self.fail_connection(1011, "keepalive ping timeout")
+                        self.fail_connection(
+                            CloseCode.INTERNAL_ERROR,
+                            "keepalive ping timeout",
+                        )
                         break
-
-        # Remove this branch when dropping support for Python < 3.8
-        # because CancelledError no longer inherits Exception.
-        except asyncio.CancelledError:
-            raise
 
         except ConnectionClosed:
             pass
@@ -1386,7 +1385,11 @@ class WebSocketCommonProtocol(asyncio.Protocol):
         # and the moment this coroutine resumes running.
         return self.connection_lost_waiter.done()
 
-    def fail_connection(self, code: int = 1006, reason: str = "") -> None:
+    def fail_connection(
+        self,
+        code: int = CloseCode.ABNORMAL_CLOSURE,
+        reason: str = "",
+    ) -> None:
         """
         7.1.7. Fail the WebSocket Connection
 
@@ -1417,7 +1420,7 @@ class WebSocketCommonProtocol(asyncio.Protocol):
         # sent if it's CLOSING), except when failing the connection because of
         # an error reading from or writing to the network.
         # Don't send a close frame if the connection is broken.
-        if code != 1006 and self.state is State.OPEN:
+        if code != CloseCode.ABNORMAL_CLOSURE and self.state is State.OPEN:
             close = Close(code, reason)
 
             # Write the close frame without draining the write buffer.

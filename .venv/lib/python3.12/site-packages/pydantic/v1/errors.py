@@ -2,12 +2,12 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Sequence, Set, Tuple, Type, Union
 
-from pydantic.v1.typing import display_as_type
+from .typing import display_as_type
 
 if TYPE_CHECKING:
-    from pydantic.v1.typing import DictStrAny
+    from .typing import DictStrAny
 
-# explicitly state exports to avoid "from pydantic.v1.errors import *" also importing Decimal, Path etc.
+# explicitly state exports to avoid "from .errors import *" also importing Decimal, Path etc.
 __all__ = (
     'PydanticTypeError',
     'PydanticValueError',

@@ -1,9 +1,9 @@
 from __future__ import annotations as _annotations
 
 import warnings
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
-from typing_extensions import deprecated
+from typing_extensions import Literal, deprecated
 
 from .._internal import _config
 from ..warnings import PydanticDeprecatedSince20
@@ -18,10 +18,10 @@ __all__ = 'BaseConfig', 'Extra'
 
 class _ConfigMetaclass(type):
     def __getattr__(self, item: str) -> Any:
+        warnings.warn(_config.DEPRECATION_MESSAGE, DeprecationWarning)
+
         try:
-            obj = _config.config_defaults[item]
-            warnings.warn(_config.DEPRECATION_MESSAGE, DeprecationWarning)
-            return obj
+            return _config.config_defaults[item]
         except KeyError as exc:
             raise AttributeError(f"type object '{self.__name__}' has no attribute {exc}") from exc
 
@@ -35,10 +35,9 @@ class BaseConfig(metaclass=_ConfigMetaclass):
     """
 
     def __getattr__(self, item: str) -> Any:
+        warnings.warn(_config.DEPRECATION_MESSAGE, DeprecationWarning)
         try:
-            obj = super().__getattribute__(item)
-            warnings.warn(_config.DEPRECATION_MESSAGE, DeprecationWarning)
-            return obj
+            return super().__getattribute__(item)
         except AttributeError as exc:
             try:
                 return getattr(type(self), item)
