@@ -456,6 +456,7 @@
     // ============================================================
     // WebSocket 客户端
     // ============================================================
+    const appBasePath = {{ root_path | tojson }};
     
     class WebSocketClient {
         constructor(engine) {
@@ -468,7 +469,7 @@
         
         connect() {
             const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const url = `${protocol}//${location.host}/ws`;
+            const url = `${protocol}//${location.host}${appBasePath}/ws`;
             
             console.log(`[WS] 连接到 ${url}`);
             this.socket = new WebSocket(url);

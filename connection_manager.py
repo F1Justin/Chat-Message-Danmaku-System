@@ -31,6 +31,7 @@ class ConnectionFilter:
 class ManagedConnection:
     """被管理的 WebSocket 连接"""
     websocket: WebSocket
+    auth_role: str = "anonymous"
     filter: ConnectionFilter = field(default_factory=ConnectionFilter)
     connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
@@ -85,7 +86,7 @@ class ConnectionManager:
     def global_allowed_groups(self) -> List[str]:
         return list(self._global_allowed_groups)
     
-    async def connect(self, websocket: WebSocket) -> ManagedConnection:
+    async def connect(self, websocket: WebSocket, auth_role: str = "anonymous") -> ManagedConnection:
         """
         接受新的 WebSocket 连接
         新连接继承当前全局过滤状态
@@ -98,6 +99,7 @@ class ConnectionManager:
             allowed_groups=self._global_allowed_groups.copy()
         )
         connection = ManagedConnection(websocket=websocket, filter=conn_filter)
+        connection.auth_role = auth_role
         self._connections.append(connection)
         
         logger.info(f"新连接已建立，当前连接数: {self.connection_count}")
@@ -233,4 +235,3 @@ class ConnectionManager:
 def get_connection_manager() -> ConnectionManager:
     """获取 ConnectionManager 单例"""
     return ConnectionManager()
-

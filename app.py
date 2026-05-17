@@ -6,14 +6,16 @@
 import asyncio
 import json
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import asyncpg
 import uvicorn
 from fastapi import Body, FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, select
@@ -38,6 +40,11 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+AUTH_QUERY_PARAM = "token"
+ROLE_ADMIN = "admin"
+ROLE_VIEW = "view"
+ROLE_ANONYMOUS = "anonymous"
 
 # ============================================================
 # 数据库配置
@@ -230,6 +237,10 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 50)
     logger.info("群聊弹幕系统启动中...")
     logger.info("=" * 50)
+    if not settings.admin_token:
+        logger.warning("ADMIN_TOKEN 未配置，控制台和 API 未启用鉴权；公网部署前必须设置")
+    elif not settings.require_view_token:
+        logger.info("弹幕页允许匿名访问；控制台和 API 需要 ADMIN_TOKEN")
     
     # 启动消息监听器
     await message_listener.start()
@@ -250,7 +261,7 @@ async def lifespan(app: FastAPI):
     logger.info("系统已关闭")
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, root_path=settings.root_path)
 
 # 配置模板和静态文件
 templates = Jinja2Templates(directory="templates")
@@ -258,16 +269,120 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 # ============================================================
-# 中间件
+# 访问控制
 # ============================================================
 
+def _constant_time_equals(left: str, right: str) -> bool:
+    return secrets.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+
+
+def _role_for_token(token: Optional[str]) -> Optional[str]:
+    """返回 token 对应的权限角色。"""
+    if not token:
+        return None
+    if settings.admin_token and _constant_time_equals(token, settings.admin_token):
+        return ROLE_ADMIN
+    if settings.view_token and _constant_time_equals(token, settings.view_token):
+        return ROLE_VIEW
+    return None
+
+
+def _request_auth(request: Request) -> tuple[str, Optional[str]]:
+    """从 URL token 或 Cookie 中提取认证角色。"""
+    query_token = request.query_params.get(AUTH_QUERY_PARAM)
+    query_role = _role_for_token(query_token)
+    if query_role:
+        return query_role, query_token
+
+    cookie_token = request.cookies.get(settings.auth_cookie_name)
+    cookie_role = _role_for_token(cookie_token)
+    if cookie_role:
+        return cookie_role, None
+
+    return ROLE_ANONYMOUS, None
+
+
+def _websocket_auth(websocket: WebSocket) -> str:
+    query_token = websocket.query_params.get(AUTH_QUERY_PARAM)
+    query_role = _role_for_token(query_token)
+    if query_role:
+        return query_role
+
+    cookie_token = websocket.cookies.get(settings.auth_cookie_name)
+    cookie_role = _role_for_token(cookie_token)
+    if cookie_role:
+        return cookie_role
+
+    return ROLE_ANONYMOUS
+
+
+def _can_admin(role: str) -> bool:
+    # 未配置 ADMIN_TOKEN 时保持本地开发兼容；公网部署必须配置。
+    return not settings.admin_token or role == ROLE_ADMIN
+
+
+def _can_view(role: str) -> bool:
+    if not settings.require_view_token:
+        return True
+    return role in {ROLE_ADMIN, ROLE_VIEW}
+
+
+def _is_allowed_client(client_host: Optional[str]) -> bool:
+    return "*" in settings.allowed_hosts or client_host in settings.allowed_hosts
+
+
+def _strip_auth_token(url: str) -> str:
+    parts = urlsplit(url)
+    query = urlencode(
+        [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True) if key != AUTH_QUERY_PARAM],
+        doseq=True
+    )
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+
+
+def _set_auth_cookie(response, request: Request, token: str) -> None:
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    is_secure = (forwarded_proto or request.url.scheme) == "https"
+    response.set_cookie(
+        key=settings.auth_cookie_name,
+        value=token,
+        max_age=60 * 60 * 24 * 30,
+        httponly=True,
+        secure=is_secure,
+        samesite="lax",
+    )
+
+
+def _unauthorized(message: str = "Unauthorized") -> JSONResponse:
+    return JSONResponse({"detail": message}, status_code=401)
+
+
 @app.middleware("http")
-async def restrict_localhost_middleware(request: Request, call_next):
-    """限制只允许本机访问"""
+async def access_control_middleware(request: Request, call_next):
+    """限制来源并保护公网管理入口。"""
     client_host = request.client.host if request.client else None
-    if client_host not in settings.allowed_hosts:
+    if not _is_allowed_client(client_host):
         return JSONResponse({"detail": "Forbidden"}, status_code=403)
-    return await call_next(request)
+
+    role, valid_query_token = _request_auth(request)
+    path = request.scope.get("path", request.url.path)
+
+    if path == "/control" and not _can_admin(role):
+        return _unauthorized("Admin token required")
+    if path.startswith("/api/") and not _can_admin(role):
+        return _unauthorized("Admin token required")
+    if path == "/" and not _can_view(role):
+        return _unauthorized("View token required")
+
+    if request.method == "GET" and valid_query_token:
+        response = RedirectResponse(_strip_auth_token(str(request.url)), status_code=303)
+        _set_auth_cookie(response, request, valid_query_token)
+        return response
+
+    response = await call_next(request)
+    if valid_query_token:
+        _set_auth_cookie(response, request, valid_query_token)
+    return response
 
 
 # ============================================================
@@ -325,12 +440,17 @@ async def websocket_endpoint(websocket: WebSocket):
     """WebSocket 连接处理"""
     # 安全检查
     client_host = websocket.client.host if websocket.client else None
-    if client_host not in settings.allowed_hosts:
+    if not _is_allowed_client(client_host):
         await websocket.close(code=1008, reason="Forbidden")
+        return
+
+    auth_role = _websocket_auth(websocket)
+    if not _can_view(auth_role):
+        await websocket.close(code=1008, reason="View token required")
         return
     
     manager = get_connection_manager()
-    connection = await manager.connect(websocket)
+    connection = await manager.connect(websocket, auth_role=auth_role)
     
     try:
         # 发送初始状态
@@ -376,6 +496,15 @@ async def handle_websocket_message(connection, data: str) -> None:
         message = json.loads(data)
         
         if message.get("type") != "command":
+            return
+
+        if not _can_admin(getattr(connection, "auth_role", ROLE_ANONYMOUS)):
+            await connection.send_json({
+                "type": "command_response",
+                "action": message.get("action", "unknown"),
+                "status": "error",
+                "message": "需要管理员权限"
+            })
             return
         
         action = message.get("action")
@@ -538,13 +667,23 @@ async def handle_broadcast_settings(connection, message: dict, manager) -> None:
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     """弹幕显示页面"""
-    return templates.TemplateResponse("danmaku.html", {"request": request})
+    return templates.TemplateResponse(
+        "danmaku.html",
+        {"request": request, "root_path": settings.root_path.rstrip("/")}
+    )
 
 
 @app.get("/control", response_class=HTMLResponse)
 async def control_panel(request: Request):
     """控制面板页面"""
-    return templates.TemplateResponse("control.html", {"request": request})
+    return templates.TemplateResponse(
+        "control.html",
+        {
+            "request": request,
+            "root_path": settings.root_path.rstrip("/"),
+            "view_token": settings.view_token if settings.require_view_token else None,
+        }
+    )
 
 
 @app.get("/api/groups", response_class=JSONResponse)

@@ -1,0 +1,15 @@
+[Unit]
+Description=Message to Danmaku FastAPI service
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/message-to-danmuku
+EnvironmentFile=/opt/message-to-danmuku/.env
+ExecStart=/opt/message-to-danmuku/.venv/bin/python -m uvicorn app:app --host ${APP_HOST} --port ${APP_PORT}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -53,6 +53,7 @@ class AppSettings(BaseSettings):
     # 服务器配置
     host: str = Field(default="127.0.0.1", alias="APP_HOST")
     port: int = Field(default=8000, alias="APP_PORT")
+    root_path: str = Field(default="", alias="ROOT_PATH")
     
     # 日志级别
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
@@ -60,8 +61,13 @@ class AppSettings(BaseSettings):
     # 安全配置
     allowed_hosts: List[str] = Field(
         default=["127.0.0.1", "::1", "localhost"],
-        description="允许访问的主机列表"
+        alias="ALLOWED_HOSTS",
+        description="允许访问的客户端地址列表，设置为 ['*'] 可允许所有来源"
     )
+    admin_token: Optional[str] = Field(default=None, alias="ADMIN_TOKEN")
+    view_token: Optional[str] = Field(default=None, alias="VIEW_TOKEN")
+    require_view_token: bool = Field(default=False, alias="REQUIRE_VIEW_TOKEN")
+    auth_cookie_name: str = Field(default="danmaku_auth", alias="AUTH_COOKIE_NAME")
     
     # 弹幕配置
     default_danmaku_speed: int = Field(
@@ -185,4 +191,3 @@ def get_runtime_config() -> RuntimeConfig:
     if _runtime_config is None:
         _runtime_config = RuntimeConfig()
     return _runtime_config
-

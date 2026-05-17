@@ -1195,6 +1195,9 @@
         aliasInput: $('#alias-input'),
         copyToast: $('#copy-toast')
     };
+    const appBasePath = {{ root_path | tojson }};
+    const viewToken = {{ view_token | tojson }};
+    const withBasePath = (path) => `${appBasePath}${path}`;
     
     // ============================================================
     // 日志系统
@@ -1224,7 +1227,7 @@
         if (state.socket) state.socket.close();
         
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const url = `${protocol}//${location.host}/ws`;
+        const url = `${protocol}//${location.host}${withBasePath('/ws')}`;
         
         log(`连接到 ${url}...`);
         state.socket = new WebSocket(url);
@@ -1306,7 +1309,7 @@
         dom.groupList.innerHTML = '<div class="loading-spinner"></div>';
         
         try {
-            const res = await fetch('/api/groups');
+            const res = await fetch(withBasePath('/api/groups'));
             const data = await res.json();
             
             if (data.status === 'success') {
@@ -1435,7 +1438,7 @@
     
     async function toggleFavorite(id, isFavorite) {
         try {
-            const res = await fetch('/api/favorite-group', {
+            const res = await fetch(withBasePath('/api/favorite-group'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ group_id: id, is_favorite: isFavorite })
@@ -1475,7 +1478,7 @@
         const alias = dom.aliasInput.value.trim();
         
         try {
-            const res = await fetch('/api/group-alias', {
+            const res = await fetch(withBasePath('/api/group-alias'), {
                     method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ group_id: state.editingGroupId, alias })
@@ -1505,7 +1508,7 @@
         const firstId = state.listenedIds.values().next().value;
         
         try {
-            const res = await fetch(`/api/recent-messages/${firstId}`);
+            const res = await fetch(withBasePath(`/api/recent-messages/${firstId}`));
             const data = await res.json();
             
             if (data.status === 'success' && data.messages.length > 0) {
@@ -1556,9 +1559,10 @@
     // ============================================================
     
     function initPreview() {
-        const baseUrl = location.origin;
-        dom.previewFrame.src = baseUrl;
-        dom.danmakuUrl.value = baseUrl;
+        const danmakuUrl = new URL(appBasePath ? `${location.origin}${appBasePath}/` : `${location.origin}/`);
+        if (viewToken) danmakuUrl.searchParams.set('token', viewToken);
+        dom.previewFrame.src = danmakuUrl.toString();
+        dom.danmakuUrl.value = danmakuUrl.toString();
     }
     
     function copyUrl() {
@@ -1609,7 +1613,14 @@
         
         $('#clear-listening').addEventListener('click', () => {
             state.listenedIds.clear();
-            send({ type: 'command', action: 'set_groups', filter_enabled: false, groups: [] });
+            send({ type: 'command', action: 'set_groups', filter_enabled: true, groups: [] });
+            if (state.isPreviewReady) {
+                dom.previewFrame.contentWindow?.postMessage({
+                    action: 'setFilter',
+                    enabled: true,
+                    allowed_groups: []
+                }, '*');
+            }
             renderGroups();
             log('已清除所有监听', 'success');
         });
@@ -1622,7 +1633,7 @@
         });
         
         $('#open-fullscreen').addEventListener('click', () => {
-            window.open(location.origin, '_blank', 'width=1280,height=720');
+            window.open(dom.danmakuUrl.value, '_blank', 'width=1280,height=720');
         });
         
         $('#copy-url').addEventListener('click', copyUrl);
