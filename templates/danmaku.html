@@ -99,6 +99,7 @@
         // 轨道设置
         trackHeight: 60,   // 每个轨道高度
         trackPadding: 10,  // 轨道间距
+        trackGap: 48,      // 同一轨道弹幕最小间隔
         
         // 视觉设置
         shadowBlur: 4,
@@ -252,7 +253,11 @@
             this.ctx = canvas.getContext('2d');
             
             this.danmakus = [];
-            this.tracks = [];  // 轨道占用状态
+            this.scrollTracks = [];
+            this.topTracks = [];
+            this.bottomTracks = [];
+            this.scrollTrackOffset = 0;
+            this.pendingDanmakus = [];
             this.processedIds = new Set();
             
             // 性能统计
@@ -285,7 +290,7 @@
             this.canvas.width = rect.width * dpr;
             this.canvas.height = rect.height * dpr;
             
-            this.ctx.scale(dpr, dpr);
+            this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             
             this.width = rect.width;
             this.height = rect.height;
@@ -294,27 +299,108 @@
         }
         
         initTracks() {
-            const trackCount = Math.floor(this.height / (Config.trackHeight + Config.trackPadding));
-            this.tracks = new Array(trackCount).fill(0);  // 存储每个轨道的结束时间
+            const totalTrackCount = Math.max(1, Math.floor(this.height / (Config.trackHeight + Config.trackPadding)));
+            const fixedTrackCount = totalTrackCount >= 3
+                ? Math.max(1, Math.min(3, Math.floor(totalTrackCount / 4)))
+                : 1;
+            const scrollTrackCount = Math.max(1, totalTrackCount - fixedTrackCount * 2);
+
+            this.scrollTrackOffset = fixedTrackCount;
+            this.scrollTracks = new Array(scrollTrackCount).fill(0);
+            this.topTracks = new Array(fixedTrackCount).fill(0);
+            this.bottomTracks = new Array(fixedTrackCount).fill(0);
         }
         
-        findAvailableTrack() {
-            const now = performance.now();
-            for (let i = 0; i < this.tracks.length; i++) {
-                if (this.tracks[i] <= now) {
+        findAvailableTrack(trackPool, now) {
+            for (let i = 0; i < trackPool.length; i++) {
+                if (trackPool[i] <= now) {
                     return i;
                 }
             }
-            // 如果没有空轨道，返回最早释放的轨道
-            let minIndex = 0;
-            let minTime = this.tracks[0];
-            for (let i = 1; i < this.tracks.length; i++) {
-                if (this.tracks[i] < minTime) {
-                    minTime = this.tracks[i];
-                    minIndex = i;
+            return -1;
+        }
+
+        getScrollSpeed() {
+            return Math.max(0.05, this.width / (Config.speedSeconds * 1000));
+        }
+
+        recordProcessedId(messageId) {
+            if (!messageId) return;
+            this.processedIds.add(messageId);
+            if (this.processedIds.size > 1000) {
+                const idsArray = Array.from(this.processedIds);
+                this.processedIds = new Set(idsArray.slice(-500));
+            }
+        }
+
+        measureDanmaku(danmaku) {
+            this.ctx.font = `${Config.fontWeight} ${Config.fontSize}px ${Config.fontFamily}`;
+            danmaku.width = this.ctx.measureText(danmaku.displayText).width;
+        }
+
+        tryPlaceScrollDanmaku(danmaku, now) {
+            const track = this.findAvailableTrack(this.scrollTracks, now);
+            if (track === -1) {
+                return false;
+            }
+
+            danmaku.track = track;
+            danmaku.x = this.width;
+            danmaku.y = (this.scrollTrackOffset + track) * (Config.trackHeight + Config.trackPadding) + Config.trackPadding;
+            danmaku.speed = this.getScrollSpeed();
+            this.scrollTracks[track] = now + ((danmaku.width + Config.trackGap) / danmaku.speed);
+            return true;
+        }
+
+        tryPlaceFixedDanmaku(danmaku, now, position) {
+            const trackPool = position === 'top' ? this.topTracks : this.bottomTracks;
+            const track = this.findAvailableTrack(trackPool, now);
+            if (track === -1) {
+                return false;
+            }
+
+            danmaku.track = track;
+            danmaku.x = (this.width - danmaku.width) / 2;
+            if (position === 'top') {
+                danmaku.y = track * (Config.trackHeight + Config.trackPadding) + Config.trackPadding;
+            } else {
+                danmaku.y = this.height - Config.fontSize - Config.trackPadding - track * (Config.trackHeight + Config.trackPadding);
+            }
+            trackPool[track] = now + danmaku.fixedDuration + 100;
+            return true;
+        }
+
+        tryPlaceDanmaku(danmaku, now) {
+            if (danmaku.position === 'scroll') {
+                return this.tryPlaceScrollDanmaku(danmaku, now);
+            }
+            if (danmaku.position === 'top') {
+                return this.tryPlaceFixedDanmaku(danmaku, now, 'top');
+            }
+            if (danmaku.position === 'bottom') {
+                return this.tryPlaceFixedDanmaku(danmaku, now, 'bottom');
+            }
+            return false;
+        }
+
+        flushPending(now) {
+            if (this.pendingDanmakus.length === 0) {
+                return;
+            }
+
+            const remaining = [];
+            for (const danmaku of this.pendingDanmakus) {
+                if (this.danmakus.length >= Config.maxDanmaku) {
+                    remaining.push(danmaku);
+                    continue;
+                }
+                if (this.tryPlaceDanmaku(danmaku, now)) {
+                    this.danmakus.push(danmaku);
+                } else {
+                    remaining.push(danmaku);
                 }
             }
-            return minIndex;
+            this.pendingDanmakus = remaining.slice(0, Config.maxDanmaku);
         }
         
         add(text, options = {}) {
@@ -341,48 +427,16 @@
             }
             
             const danmaku = new Danmaku(text, options);
-            
-            // 测量文本宽度
-            this.ctx.font = `${Config.fontWeight} ${Config.fontSize}px ${Config.fontFamily}`;
-            danmaku.width = this.ctx.measureText(danmaku.displayText).width;
-            
-            if (danmaku.position === 'scroll') {
-                // 滚动弹幕
-                danmaku.x = this.width;
-                
-                // 分配轨道
-                danmaku.track = this.findAvailableTrack();
-                danmaku.y = danmaku.track * (Config.trackHeight + Config.trackPadding) + Config.trackPadding;
-                
-                // 计算速度（像素/毫秒）
-                const totalDistance = this.width + danmaku.width;
-                danmaku.speed = totalDistance / (Config.speedSeconds * 1000);
-                
-                // 更新轨道占用时间
-                // 计算弹幕完全进入屏幕的时间
-                const enterTime = danmaku.width / danmaku.speed;
-                this.tracks[danmaku.track] = performance.now() + enterTime + 100;  // 加100ms间隔
-                
-            } else if (danmaku.position === 'top') {
-                // 顶部居中
-                danmaku.x = (this.width - danmaku.width) / 2;
-                danmaku.y = Config.trackPadding;
-                
-            } else if (danmaku.position === 'bottom') {
-                // 底部居中
-                danmaku.x = (this.width - danmaku.width) / 2;
-                danmaku.y = this.height - Config.fontSize - Config.trackPadding;
-            }
-            
-            this.danmakus.push(danmaku);
-            
-            // 记录消息ID
-            if (options.messageId) {
-                this.processedIds.add(options.messageId);
-                // 限制已处理ID的数量
-                if (this.processedIds.size > 1000) {
-                    const idsArray = Array.from(this.processedIds);
-                    this.processedIds = new Set(idsArray.slice(-500));
+            this.measureDanmaku(danmaku);
+            this.recordProcessedId(options.messageId);
+
+            const now = performance.now();
+            if (this.tryPlaceDanmaku(danmaku, now)) {
+                this.danmakus.push(danmaku);
+            } else {
+                this.pendingDanmakus.push(danmaku);
+                if (this.pendingDanmakus.length > Config.maxDanmaku) {
+                    this.pendingDanmakus.shift();
                 }
             }
             
@@ -391,6 +445,7 @@
         
         clear() {
             this.danmakus = [];
+            this.pendingDanmakus = [];
             this.processedIds.clear();
             this.initTracks();
         }
@@ -441,6 +496,8 @@
                 requestAnimationFrame((t) => this.loop(t));
                 return;
             }
+
+            this.flushPending(currentTime);
             
             // 更新和渲染弹幕
             for (let i = this.danmakus.length - 1; i >= 0; i--) {

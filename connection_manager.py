@@ -161,6 +161,10 @@ class ConnectionManager:
         广播弹幕消息（带过滤）
         默认只发送给订阅了该群组的连接；force=True 时绕过过滤。
         """
+        if self._screen_cleared:
+            logger.debug("当前处于清屏锁定状态，忽略新的弹幕广播")
+            return 0
+
         danmaku_data = {
             "type": "danmaku",
             "group_id": str(group_id),

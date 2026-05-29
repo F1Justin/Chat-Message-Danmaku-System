@@ -1642,11 +1642,11 @@
         
         $('#clear-listening').addEventListener('click', () => {
             state.listenedIds.clear();
-            send({ type: 'command', action: 'set_groups', filter_enabled: true, groups: [] });
+            send({ type: 'command', action: 'set_groups', filter_enabled: false, groups: [] });
             if (state.isPreviewReady) {
                 dom.previewFrame.contentWindow?.postMessage({
                     action: 'setFilter',
-                    enabled: true,
+                    enabled: false,
                     allowed_groups: []
                 }, '*');
             }
