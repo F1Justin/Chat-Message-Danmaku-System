@@ -315,11 +315,18 @@ def _role_for_token(token: Optional[str]) -> Optional[str]:
 
 
 def _request_auth(request: Request) -> tuple[str, Optional[str]]:
-    """从 URL token 或 Cookie 中提取认证角色。"""
+    """从 URL token、Bearer header 或 Cookie 中提取认证角色。"""
     query_token = request.query_params.get(AUTH_QUERY_PARAM)
     query_role = _role_for_token(query_token)
     if query_role:
         return query_role, query_token
+
+    auth_header = request.headers.get("authorization", "")
+    auth_scheme, _, auth_token = auth_header.partition(" ")
+    if auth_scheme.lower() == "bearer":
+        header_role = _role_for_token(auth_token.strip())
+        if header_role:
+            return header_role, None
 
     cookie_token = request.cookies.get(settings.auth_cookie_name)
     cookie_role = _role_for_token(cookie_token)
@@ -815,6 +822,33 @@ async def get_recent_messages(group_id: str):
     except Exception as e:
         logger.error(f"获取最近消息出错: {e}")
         return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/inject-danmaku", response_class=JSONResponse)
+async def inject_danmaku(data: Dict[str, Any] = Body(...)):
+    """从外部系统注入一条即时弹幕。"""
+    content = str(data.get("content") or "").strip()
+    if not content:
+        return JSONResponse({"status": "error", "message": "缺少弹幕内容"}, status_code=400)
+
+    now = datetime.now(timezone.utc)
+    message_id = str(data.get("message_id") or f"inject-{int(now.timestamp() * 1000)}")
+    group_id = str(data.get("group_id") or "external")
+    user_id = str(data.get("user_id") or "external")
+
+    sent_count = await get_connection_manager().broadcast_danmaku(
+        group_id=group_id,
+        user_id=user_id,
+        content=content,
+        message_id=message_id,
+        timestamp=now,
+    )
+
+    return {
+        "status": "success",
+        "message_id": message_id,
+        "sent": sent_count,
+    }
 
 
 @app.post("/api/group-alias", response_class=JSONResponse)
