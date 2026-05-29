@@ -659,6 +659,11 @@
         .preview-btn:hover {
             background: rgba(255, 255, 255, 0.2);
         }
+
+        .preview-btn.active {
+            background: rgba(239, 68, 68, 0.3);
+            border-color: rgba(239, 68, 68, 0.8);
+        }
         
         .url-copy {
             display: flex;
@@ -1033,7 +1038,7 @@
                 <div class="preview-container">
             <iframe id="preview-frame" class="preview-frame" src="about:blank"></iframe>
                     <div class="preview-overlay">
-                        <button class="preview-btn" id="clear-danmaku">清空弹幕</button>
+                        <button class="preview-btn" id="toggle-screen-clear">一键清屏</button>
                         <button class="preview-btn" id="open-fullscreen">新窗口打开</button>
             </div>
                 </div>
@@ -1165,7 +1170,8 @@
         messageCount: 0,
         lastCountTime: Date.now(),
         isPreviewReady: false,
-        editingGroupId: null
+        editingGroupId: null,
+        screenCleared: false
     };
     
     // ============================================================
@@ -1190,6 +1196,7 @@
         speedValue: $('#speed-value'),
         maxDanmaku: $('#max-danmaku'),
         fontSize: $('#font-size'),
+        screenClearButton: $('#toggle-screen-clear'),
         logContent: $('#log-content'),
         aliasModal: $('#alias-modal'),
         aliasInput: $('#alias-input'),
@@ -1271,6 +1278,13 @@
                     break;
                 case 'setting_update':
                     if (data.key === 'danmaku_speed') updateSpeedUI(data.value);
+                    break;
+                case 'screen_clear_update':
+                    updateScreenClearUI(data.enabled);
+                    if (state.isPreviewReady) {
+                        dom.previewFrame.contentWindow?.postMessage({ action: 'setScreenClear', enabled: data.enabled }, '*');
+                    }
+                    log(data.enabled ? '已进入清屏状态' : '已解除清屏');
                     break;
                 case 'command_response':
                     log(`${data.action}: ${data.message}`, data.status === 'success' ? 'success' : 'error');
@@ -1553,6 +1567,21 @@
         
         log('设置已应用', 'success');
     }
+
+    function updateScreenClearUI(enabled) {
+        state.screenCleared = Boolean(enabled);
+        if (!dom.screenClearButton) return;
+        dom.screenClearButton.textContent = state.screenCleared ? '解除清屏' : '一键清屏';
+        dom.screenClearButton.classList.toggle('active', state.screenCleared);
+    }
+
+    function toggleScreenClear() {
+        send({
+            type: 'command',
+            action: 'set_screen_clear',
+            enabled: !state.screenCleared
+        });
+    }
     
     // ============================================================
     // 预览
@@ -1627,10 +1656,7 @@
         
         $('#show-recent').addEventListener('click', showRecentMessages);
         
-        $('#clear-danmaku').addEventListener('click', () => {
-            dom.previewFrame.contentWindow?.postMessage({ action: 'clearDanmaku' }, '*');
-            log('已清空弹幕', 'success');
-        });
+        dom.screenClearButton.addEventListener('click', toggleScreenClear);
         
         $('#open-fullscreen').addEventListener('click', () => {
             window.open(dom.danmakuUrl.value, '_blank', 'width=1280,height=720');

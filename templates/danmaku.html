@@ -264,6 +264,7 @@
             // 过滤设置
             this.filterEnabled = false;
             this.allowedGroups = new Set();
+            this.screenCleared = false;
             
             // 初始化
             this.resize();
@@ -317,13 +318,17 @@
         }
         
         add(text, options = {}) {
+            if (this.screenCleared) {
+                return null;
+            }
+
             // 检查消息ID是否已处理
             if (options.messageId && this.processedIds.has(options.messageId)) {
                 return null;
             }
             
             // 检查过滤
-            if (this.filterEnabled && options.groupId) {
+            if (!options.force && this.filterEnabled && options.groupId) {
                 if (!this.allowedGroups.has(String(options.groupId))) {
                     return null;
                 }
@@ -389,6 +394,13 @@
             this.processedIds.clear();
             this.initTracks();
         }
+
+        setScreenCleared(enabled) {
+            this.screenCleared = Boolean(enabled);
+            if (this.screenCleared) {
+                this.clear();
+            }
+        }
         
         setFilter(enabled, groups) {
             this.filterEnabled = enabled;
@@ -424,6 +436,11 @@
             
             // 清空画布
             this.ctx.clearRect(0, 0, this.width, this.height);
+
+            if (this.screenCleared) {
+                requestAnimationFrame((t) => this.loop(t));
+                return;
+            }
             
             // 更新和渲染弹幕
             for (let i = this.danmakus.length - 1; i >= 0; i--) {
@@ -504,7 +521,8 @@
                         this.engine.add(msg.content, {
                             messageId: msg.message_id,
                             userId: msg.user_id,
-                            groupId: msg.group_id
+                            groupId: msg.group_id,
+                            force: msg.force === true
                         });
                         break;
                         
@@ -527,6 +545,10 @@
                         } else if (msg.settings) {
                             this.applySettings(msg.settings);
                         }
+                        break;
+
+                    case 'screen_clear_update':
+                        this.engine.setScreenCleared(msg.enabled);
                         break;
                         
                     case 'stats':
@@ -631,7 +653,8 @@
                     engine.add(data.message.content, {
                         messageId: data.message.message_id,
                         userId: data.message.user_id,
-                        groupId: data.message.group_id
+                        groupId: data.message.group_id,
+                        force: data.message.force === true
                     });
                     break;
                     
@@ -645,6 +668,10 @@
                     
                 case 'setFilter':
                     engine.setFilter(data.enabled, data.allowed_groups);
+                    break;
+
+                case 'setScreenClear':
+                    engine.setScreenCleared(data.enabled);
                     break;
             }
         });

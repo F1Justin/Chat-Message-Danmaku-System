@@ -69,6 +69,7 @@ class ConnectionManager:
         # 全局过滤状态（新连接继承）
         self._global_filter_enabled: bool = False
         self._global_allowed_groups: Set[str] = set()
+        self._screen_cleared: bool = False
         
         self._initialized = True
         logger.info("ConnectionManager 初始化完成")
@@ -85,6 +86,10 @@ class ConnectionManager:
     @property
     def global_allowed_groups(self) -> List[str]:
         return list(self._global_allowed_groups)
+
+    @property
+    def screen_cleared(self) -> bool:
+        return self._screen_cleared
     
     async def connect(self, websocket: WebSocket, auth_role: str = "anonymous") -> ManagedConnection:
         """
@@ -149,11 +154,12 @@ class ConnectionManager:
         user_id: str,
         content: str,
         message_id: str,
-        timestamp: datetime
+        timestamp: datetime,
+        force: bool = False
     ) -> int:
         """
         广播弹幕消息（带过滤）
-        只发送给订阅了该群组的连接
+        默认只发送给订阅了该群组的连接；force=True 时绕过过滤。
         """
         danmaku_data = {
             "type": "danmaku",
@@ -161,14 +167,15 @@ class ConnectionManager:
             "user_id": str(user_id),
             "content": content,
             "message_id": message_id,
-            "time": timestamp.isoformat() if timestamp else None
+            "time": timestamp.isoformat() if timestamp else None,
+            "force": force
         }
         
         sent_count = 0
         failed_connections = []
         
         for conn in self._connections:
-            if conn.filter.should_receive(group_id):
+            if force or conn.filter.should_receive(group_id):
                 if await conn.send_json(danmaku_data):
                     sent_count += 1
                 else:
@@ -214,6 +221,18 @@ class ConnectionManager:
             "type": "broadcast_filter_update",
             "filter_enabled": self._global_filter_enabled,
             "allowed_groups": list(self._global_allowed_groups)
+        })
+
+    def set_screen_cleared(self, enabled: bool) -> None:
+        """设置全局清屏状态。"""
+        self._screen_cleared = bool(enabled)
+        logger.info(f"全局清屏状态已更新: enabled={self._screen_cleared}")
+
+    async def broadcast_screen_clear_update(self) -> None:
+        """广播清屏状态更新。"""
+        await self.broadcast_to_all({
+            "type": "screen_clear_update",
+            "enabled": self._screen_cleared
         })
     
     # Session ID 到 Group ID 的缓存管理

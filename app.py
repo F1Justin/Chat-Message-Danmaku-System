@@ -506,6 +506,11 @@ async def websocket_endpoint(websocket: WebSocket):
             "filter_enabled": manager.global_filter_enabled,
             "allowed_groups": manager.global_allowed_groups
         })
+
+        await connection.send_json({
+            "type": "screen_clear_update",
+            "enabled": manager.screen_cleared
+        })
         
         # 发送上次聚焦的群组提示
         if runtime_config.active_group_id:
@@ -562,6 +567,9 @@ async def handle_websocket_message(connection, data: str) -> None:
         
         elif action == "broadcast_settings":
             await handle_broadcast_settings(connection, message, manager)
+
+        elif action == "set_screen_clear":
+            await handle_set_screen_clear(connection, message, manager)
         
     except json.JSONDecodeError:
         logger.warning("收到无效的 JSON 消息")
@@ -696,6 +704,19 @@ async def handle_broadcast_settings(connection, message: dict, manager) -> None:
             "status": "error",
             "message": "无效的设置"
         })
+
+
+async def handle_set_screen_clear(connection, message: dict, manager) -> None:
+    """处理全局清屏/解除清屏。"""
+    enabled = bool(message.get("enabled", False))
+    manager.set_screen_cleared(enabled)
+    await manager.broadcast_screen_clear_update()
+    await connection.send_json({
+        "type": "command_response",
+        "action": "set_screen_clear",
+        "status": "success",
+        "message": "已清屏，新的弹幕会被暂时屏蔽" if enabled else "已解除清屏，恢复显示新弹幕"
+    })
 
 
 # ============================================================
@@ -842,12 +863,14 @@ async def inject_danmaku(data: Dict[str, Any] = Body(...)):
         content=content,
         message_id=message_id,
         timestamp=now,
+        force=True,
     )
 
     return {
         "status": "success",
         "message_id": message_id,
         "sent": sent_count,
+        "force": True,
     }
 
 
