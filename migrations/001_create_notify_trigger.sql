@@ -27,10 +27,11 @@ $$ LANGUAGE plpgsql;
 
 -- 删除已存在的触发器（如果有）
 DROP TRIGGER IF EXISTS message_insert_notify ON nonebot_plugin_chatrecorder_messagerecord;
+DROP TRIGGER IF EXISTS message_insert_notify ON nonebot_plugin_chatrecorder_messagerecord_v2;
 
--- 创建触发器：在插入新消息后触发
+-- 创建触发器：在新版消息表插入新消息后触发
 CREATE TRIGGER message_insert_notify
-    AFTER INSERT ON nonebot_plugin_chatrecorder_messagerecord
+    AFTER INSERT ON nonebot_plugin_chatrecorder_messagerecord_v2
     FOR EACH ROW
     EXECUTE FUNCTION notify_new_message();
 
@@ -40,6 +41,5 @@ CREATE TRIGGER message_insert_notify
 -- ============================================================
 -- 回滚脚本（如需删除）
 -- ============================================================
--- DROP TRIGGER IF EXISTS message_insert_notify ON nonebot_plugin_chatrecorder_messagerecord;
+-- DROP TRIGGER IF EXISTS message_insert_notify ON nonebot_plugin_chatrecorder_messagerecord_v2;
 -- DROP FUNCTION IF EXISTS notify_new_message();
-

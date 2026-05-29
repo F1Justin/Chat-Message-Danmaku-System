@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, select
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 from config import get_app_settings, get_db_settings, get_runtime_config
 from connection_manager import get_connection_manager
@@ -56,30 +56,57 @@ async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False
 Base = declarative_base()
 
 
-class SessionModel(Base):
-    """会话模型 - 对应 nonebot_plugin_session_orm_sessionmodel"""
-    __tablename__ = "nonebot_plugin_session_orm_sessionmodel"
-    
+class BotModel(Base):
+    """Bot 模型 - 对应 nonebot_plugin_uninfo_botmodel"""
+    __tablename__ = "nonebot_plugin_uninfo_botmodel"
+
     id = Column(Integer, primary_key=True, index=True)
-    bot_id = Column(String(64), nullable=False)
-    bot_type = Column(String(32), nullable=False)
-    platform = Column(String(32), nullable=False)
-    level = Column(Integer, nullable=False)
-    id1 = Column(String(64), nullable=False)  # 用户ID
-    id2 = Column(String(64), nullable=False)  # 群ID (level=2时)
-    id3 = Column(String(64), nullable=False)
-    
-    messages = relationship("MessageRecord", back_populates="session")
+    self_id = Column(String(64), nullable=False)
+    adapter = Column(String(64), nullable=False)
+    scope = Column(String(64), nullable=False)
+
+
+class SceneModel(Base):
+    """场景模型 - 对应 nonebot_plugin_uninfo_scenemodel"""
+    __tablename__ = "nonebot_plugin_uninfo_scenemodel"
+
+    id = Column(Integer, primary_key=True, index=True)
+    bot_persist_id = Column(Integer, ForeignKey("nonebot_plugin_uninfo_botmodel.id"), nullable=False)
+    parent_scene_persist_id = Column(Integer, nullable=True)
+    scene_id = Column(String(64), nullable=False)
+    scene_type = Column(Integer, nullable=False)
+    scene_data = Column(JSON, nullable=False)
+
+
+class UserModel(Base):
+    """用户模型 - 对应 nonebot_plugin_uninfo_usermodel"""
+    __tablename__ = "nonebot_plugin_uninfo_usermodel"
+
+    id = Column(Integer, primary_key=True, index=True)
+    bot_persist_id = Column(Integer, ForeignKey("nonebot_plugin_uninfo_botmodel.id"), nullable=False)
+    user_id = Column(String(64), nullable=False)
+    user_data = Column(JSON, nullable=False)
+
+
+class UninfoSessionModel(Base):
+    """新版会话模型 - 对应 nonebot_plugin_uninfo_sessionmodel"""
+    __tablename__ = "nonebot_plugin_uninfo_sessionmodel"
+
+    id = Column(Integer, primary_key=True, index=True)
+    bot_persist_id = Column(Integer, ForeignKey("nonebot_plugin_uninfo_botmodel.id"), nullable=False)
+    scene_persist_id = Column(Integer, ForeignKey("nonebot_plugin_uninfo_scenemodel.id"), nullable=False)
+    user_persist_id = Column(Integer, ForeignKey("nonebot_plugin_uninfo_usermodel.id"), nullable=False)
+    member_data = Column(JSON, nullable=True)
 
 
 class MessageRecord(Base):
-    """消息记录模型 - 对应 nonebot_plugin_chatrecorder_messagerecord"""
-    __tablename__ = "nonebot_plugin_chatrecorder_messagerecord"
+    """消息记录模型 - 对应 nonebot_plugin_chatrecorder_messagerecord_v2"""
+    __tablename__ = "nonebot_plugin_chatrecorder_messagerecord_v2"
     
     id = Column(Integer, primary_key=True, index=True)
     session_persist_id = Column(
         Integer, 
-        ForeignKey("nonebot_plugin_session_orm_sessionmodel.id"), 
+        ForeignKey("nonebot_plugin_uninfo_sessionmodel.id"),
         nullable=False
     )
     time = Column(DateTime(timezone=True), nullable=False)
@@ -87,8 +114,6 @@ class MessageRecord(Base):
     message_id = Column(String(255), nullable=False)
     message = Column(JSON, nullable=False)
     plain_text = Column(Text, nullable=False)
-    
-    session = relationship("SessionModel", back_populates="messages")
 
 
 # ============================================================
@@ -167,8 +192,10 @@ class MessageListener:
         """获取消息详情并广播"""
         async with async_session() as session:
             query = (
-                select(MessageRecord, SessionModel)
-                .join(SessionModel, MessageRecord.session_persist_id == SessionModel.id)
+                select(MessageRecord, UninfoSessionModel, SceneModel, UserModel)
+                .join(UninfoSessionModel, MessageRecord.session_persist_id == UninfoSessionModel.id)
+                .join(SceneModel, UninfoSessionModel.scene_persist_id == SceneModel.id)
+                .join(UserModel, UninfoSessionModel.user_persist_id == UserModel.id)
                 .where(MessageRecord.id == message_id)
             )
             result = await session.execute(query)
@@ -178,7 +205,7 @@ class MessageListener:
                 logger.warning(f"未找到消息: id={message_id}")
                 return
             
-            message, session_model = row
+            message, session_model, scene_model, user_model = row
             
             # 处理消息内容
             content = self._process_content(message.plain_text)
@@ -192,13 +219,13 @@ class MessageListener:
             # 缓存 session 映射
             self._manager.cache_session_mapping(
                 str(session_model.id), 
-                str(session_model.id2)
+                str(scene_model.scene_id)
             )
             
             # 广播弹幕
             await self._manager.broadcast_danmaku(
-                group_id=session_model.id2,
-                user_id=session_model.id1,
+                group_id=scene_model.scene_id,
+                user_id=user_model.user_id,
                 content=content,
                 message_id=message.message_id,
                 timestamp=message_time
@@ -418,7 +445,11 @@ async def get_group_id_from_session_id(session_id: str) -> Optional[str]:
     # 从数据库查询
     try:
         async with async_session() as session:
-            query = select(SessionModel.id2).where(SessionModel.id == int(session_id))
+            query = (
+                select(SceneModel.scene_id)
+                .join(UninfoSessionModel, UninfoSessionModel.scene_persist_id == SceneModel.id)
+                .where(UninfoSessionModel.id == int(session_id))
+            )
             result = await session.execute(query)
             group_id = result.scalar_one_or_none()
             
@@ -668,8 +699,9 @@ async def handle_broadcast_settings(connection, message: dict, manager) -> None:
 async def read_root(request: Request):
     """弹幕显示页面"""
     return templates.TemplateResponse(
-        "danmaku.html",
-        {"request": request, "root_path": settings.root_path.rstrip("/")}
+        request,
+        name="danmaku.html",
+        context={"request": request, "root_path": settings.root_path.rstrip("/")},
     )
 
 
@@ -677,12 +709,13 @@ async def read_root(request: Request):
 async def control_panel(request: Request):
     """控制面板页面"""
     return templates.TemplateResponse(
-        "control.html",
-        {
+        request,
+        name="control.html",
+        context={
             "request": request,
             "root_path": settings.root_path.rstrip("/"),
             "view_token": settings.view_token if settings.require_view_token else None,
-        }
+        },
     )
 
 
@@ -692,23 +725,24 @@ async def get_groups():
     try:
         async with async_session() as session:
             query = (
-                select(SessionModel)
-                .where(SessionModel.level == 2)
-                .order_by(SessionModel.id)
+                select(UninfoSessionModel, SceneModel)
+                .join(SceneModel, UninfoSessionModel.scene_persist_id == SceneModel.id)
+                .where(SceneModel.scene_type == 1)
+                .order_by(UninfoSessionModel.id)
             )
             result = await session.execute(query)
-            groups = result.scalars().all()
+            groups = result.fetchall()
             
             # 去重
             unique_groups = {}
-            for group in groups:
-                group_id = group.id2
-                if group_id not in unique_groups or int(group.id) < int(unique_groups[group_id]["id"]):
+            for session_model, scene_model in groups:
+                group_id = scene_model.scene_id
+                if group_id not in unique_groups or int(session_model.id) < int(unique_groups[group_id]["id"]):
                     alias = runtime_config.group_aliases.get(str(group_id), "")
-                    is_favorite = str(group.id) in runtime_config.favorite_groups
+                    is_favorite = str(session_model.id) in runtime_config.favorite_groups
                     
                     unique_groups[group_id] = {
-                        "id": str(group.id),
+                        "id": str(session_model.id),
                         "group_id": group_id,
                         "alias": alias,
                         "is_favorite": is_favorite
@@ -729,7 +763,11 @@ async def get_recent_messages(group_id: str):
     try:
         async with async_session() as session:
             # 获取实际的群ID
-            group_id_query = select(SessionModel.id2).where(SessionModel.id == int(group_id))
+            group_id_query = (
+                select(SceneModel.scene_id)
+                .join(UninfoSessionModel, UninfoSessionModel.scene_persist_id == SceneModel.id)
+                .where(UninfoSessionModel.id == int(group_id))
+            )
             result = await session.execute(group_id_query)
             actual_group_id = result.scalar_one_or_none()
             
@@ -738,10 +776,13 @@ async def get_recent_messages(group_id: str):
             
             # 查询最近消息
             query = (
-                select(MessageRecord, SessionModel)
-                .join(SessionModel, MessageRecord.session_persist_id == SessionModel.id)
+                select(MessageRecord, SceneModel, UserModel)
+                .join(UninfoSessionModel, MessageRecord.session_persist_id == UninfoSessionModel.id)
+                .join(SceneModel, UninfoSessionModel.scene_persist_id == SceneModel.id)
+                .join(UserModel, UninfoSessionModel.user_persist_id == UserModel.id)
                 .where(
-                    SessionModel.id2 == actual_group_id,
+                    SceneModel.scene_type == 1,
+                    SceneModel.scene_id == actual_group_id,
                     MessageRecord.type == "message",
                     MessageRecord.plain_text != ""
                 )
@@ -753,7 +794,7 @@ async def get_recent_messages(group_id: str):
             messages = result.fetchall()
             
             message_list = []
-            for message, session_model in reversed(messages):
+            for message, scene_model, user_model in reversed(messages):
                 content = MessageListener._process_content(message.plain_text)
                 
                 # 统一时间格式
@@ -763,8 +804,8 @@ async def get_recent_messages(group_id: str):
                 
                 message_list.append({
                     "message_id": message.message_id,
-                    "user_id": session_model.id1,
-                    "group_id": session_model.id2,
+                    "user_id": user_model.user_id,
+                    "group_id": scene_model.scene_id,
                     "time": msg_time.isoformat(),
                     "content": content
                 })

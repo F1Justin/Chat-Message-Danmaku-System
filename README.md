@@ -125,10 +125,13 @@ Message-to-danmuku/
 
 ## 🔧 数据库兼容性
 
-本项目默认与 [NoneBot 聊天记录插件](https://github.com/noneplugin/nonebot-plugin-chatrecorder) 兼容：
+本项目默认与 [NoneBot 聊天记录插件](https://github.com/noneplugin/nonebot-plugin-chatrecorder) 的新版 `chatrecorder_v2` / `nonebot_plugin_uninfo` 表结构兼容：
 
-- `nonebot_plugin_chatrecorder_messagerecord`
-- `nonebot_plugin_session_orm_sessionmodel`
+- `nonebot_plugin_chatrecorder_messagerecord_v2`
+- `nonebot_plugin_uninfo_sessionmodel`
+- `nonebot_plugin_uninfo_scenemodel`
+- `nonebot_plugin_uninfo_usermodel`
+- `nonebot_plugin_uninfo_botmodel`
 
 如使用其他数据库结构，请修改 `app.py` 中的模型定义。
 
