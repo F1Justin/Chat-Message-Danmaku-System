@@ -6,7 +6,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -33,12 +33,16 @@ class DatabaseSettings(BaseSettings):
     @property
     def async_url(self) -> str:
         """获取异步数据库连接 URL"""
-        return f"postgresql+asyncpg://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
+        from sqlalchemy.engine import URL
+        return URL.create("postgresql+asyncpg", username=self.user, password=self.password,
+                          host=self.host, port=self.port, database=self.name).render_as_string(hide_password=False)
     
     @property
     def dsn(self) -> str:
         """获取 asyncpg 原生 DSN"""
-        return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
+        from sqlalchemy.engine import URL
+        return URL.create("postgresql", username=self.user, password=self.password,
+                          host=self.host, port=self.port, database=self.name).render_as_string(hide_password=False)
 
 
 class AppSettings(BaseSettings):
@@ -66,9 +70,12 @@ class AppSettings(BaseSettings):
     )
     admin_token: Optional[str] = Field(default=None, alias="ADMIN_TOKEN")
     view_token: Optional[str] = Field(default=None, alias="VIEW_TOKEN")
-    require_view_token: bool = Field(default=False, alias="REQUIRE_VIEW_TOKEN")
     auth_cookie_name: str = Field(default="danmaku_auth", alias="AUTH_COOKIE_NAME")
     
+    rooms_file: str = "rooms.json"
+    room_state_dir: str = "room-state"
+    allowed_groups: List[str] = Field(default_factory=list, alias="ALLOWED_GROUPS")
+
     # 弹幕配置
     default_danmaku_speed: int = Field(
         default=10, 
@@ -103,6 +110,9 @@ class RuntimeConfig:
         self.favorite_groups: List[str] = []
         self.active_group_id: Optional[str] = None
         self.danmaku_speed: int = 10
+        self.selected_groups: Optional[List[str]] = None
+        self.screen_cleared: bool = False
+        self.display_settings: Dict[str, Any] = {}
         self._load()
     
     def _load(self) -> None:
@@ -115,6 +125,9 @@ class RuntimeConfig:
                     self.favorite_groups = data.get("favorite_groups", [])
                     self.active_group_id = data.get("active_group_id")
                     self.danmaku_speed = data.get("danmaku_speed", 10)
+                    self.selected_groups = data.get("selected_groups")
+                    self.screen_cleared = bool(data.get("screen_cleared", False))
+                    self.display_settings = data.get("display_settings", {})
                     logger.info(
                         f"已加载配置: 别名={len(self.group_aliases)} "
                         f"常用群={len(self.favorite_groups)} "
@@ -132,13 +145,26 @@ class RuntimeConfig:
                 "group_aliases": self.group_aliases,
                 "favorite_groups": self.favorite_groups,
                 "active_group_id": self.active_group_id,
-                "danmaku_speed": self.danmaku_speed
+                "danmaku_speed": self.danmaku_speed,
+                "selected_groups": self.selected_groups,
+                "screen_cleared": self.screen_cleared,
+                "display_settings": self.display_settings
             }
-            with open(self.config_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            import os
+            import tempfile
+            self.config_file.parent.mkdir(parents=True, exist_ok=True)
+            fd, name = tempfile.mkstemp(dir=self.config_file.parent, prefix=".state-")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                os.replace(name, self.config_file)
+            finally:
+                if os.path.exists(name):
+                    os.unlink(name)
             logger.info("配置已保存")
         except Exception as e:
             logger.error(f"保存配置出错: {e}")
+            raise
     
     def set_group_alias(self, group_id: str, alias: str) -> None:
         """设置群组别名"""

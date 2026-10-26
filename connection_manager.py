@@ -47,31 +47,19 @@ class ManagedConnection:
 
 class ConnectionManager:
     """
-    WebSocket 连接管理器（单例模式）
+    单个房间的 WebSocket 连接管理器
     负责管理所有活跃连接、过滤规则和消息广播
     """
     
-    _instance: Optional["ConnectionManager"] = None
-    
-    def __new__(cls) -> "ConnectionManager":
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-    
     def __init__(self):
-        if self._initialized:
-            return
-        
         self._connections: List[ManagedConnection] = []
         self._session_to_group_cache: Dict[str, str] = {}
         
-        # 全局过滤状态（新连接继承）
+        # 房间过滤状态（新连接继承）
         self._global_filter_enabled: bool = False
         self._global_allowed_groups: Set[str] = set()
         self._screen_cleared: bool = False
         
-        self._initialized = True
         logger.info("ConnectionManager 初始化完成")
     
     @property
@@ -94,11 +82,11 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket, auth_role: str = "anonymous") -> ManagedConnection:
         """
         接受新的 WebSocket 连接
-        新连接继承当前全局过滤状态
+        新连接继承当前房间过滤状态
         """
         await websocket.accept()
         
-        # 创建连接并继承全局过滤状态
+        # 创建连接并继承房间过滤状态
         conn_filter = ConnectionFilter(
             enabled=self._global_filter_enabled,
             allowed_groups=self._global_allowed_groups.copy()
@@ -203,7 +191,7 @@ class ConnectionManager:
     
     def set_global_filter(self, enabled: bool, allowed_groups: List[str]) -> None:
         """
-        设置全局过滤状态
+        设置房间过滤状态
         同时更新所有现有连接的过滤器
         """
         self._global_filter_enabled = enabled
@@ -215,7 +203,7 @@ class ConnectionManager:
             conn.filter.allowed_groups = self._global_allowed_groups.copy()
         
         logger.info(
-            f"全局过滤器已更新: enabled={enabled}, "
+            f"房间过滤器已更新: enabled={enabled}, "
             f"groups={allowed_groups}, 影响 {self.connection_count} 个连接"
         )
     
@@ -228,9 +216,9 @@ class ConnectionManager:
         })
 
     def set_screen_cleared(self, enabled: bool) -> None:
-        """设置全局清屏状态。"""
+        """设置房间清屏状态。"""
         self._screen_cleared = bool(enabled)
-        logger.info(f"全局清屏状态已更新: enabled={self._screen_cleared}")
+        logger.info(f"房间清屏状态已更新: enabled={self._screen_cleared}")
 
     async def broadcast_screen_clear_update(self) -> None:
         """广播清屏状态更新。"""
@@ -254,7 +242,7 @@ class ConnectionManager:
         logger.info("缓存已清除")
 
 
-# 获取全局单例
+# 获取当前请求或 WebSocket 所属房间的管理器
 def get_connection_manager() -> ConnectionManager:
-    """获取 ConnectionManager 单例"""
-    return ConnectionManager()
+    from rooms import get_room
+    return get_room().manager

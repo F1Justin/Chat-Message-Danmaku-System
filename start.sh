@@ -107,8 +107,6 @@ stop_server() {
         rm -f "$SSH_PID_FILE"
     fi
     
-    # 清理所有可能残留的 SSH 隧道
-    pkill -f "ssh.*-L.*${DB_PORT}:localhost:${DB_PORT}.*${SSH_HOST}" 2>/dev/null || true
     
     success "服务已停止"
 }
@@ -121,7 +119,6 @@ stop_ssh_tunnel() {
         fi
         rm -f "$SSH_PID_FILE"
     fi
-    pkill -f "ssh.*-L.*${DB_PORT}:localhost:${DB_PORT}.*${SSH_HOST}" 2>/dev/null || true
 }
 
 if [ "$CMD" = "stop" ]; then
@@ -232,9 +229,11 @@ elif [ -z "$SSH_HOST" ]; then
 else
     info "建立 SSH 隧道到 ${SSH_HOST}..."
     
-    # 启动 SSH 隧道（后台运行，自动重连）
-    ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-        -L ${DB_PORT}:localhost:${DB_PORT} ${SSH_HOST}
+    # 仅跟踪当前启动的 SSH 隧道，不匹配或终止其他会话。
+    ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+        -L "${DB_PORT}:localhost:${DB_PORT}" "$SSH_HOST" &
+    SSH_PID=$!
+    echo "$SSH_PID" > "$SSH_PID_FILE"
     
     # 等待隧道建立
     sleep 2
@@ -242,7 +241,6 @@ else
     # 检查隧道是否成功
     if lsof -nP -iTCP:${DB_PORT} -sTCP:LISTEN >/dev/null 2>&1; then
         # 保存 SSH 进程 PID
-        SSH_PID=$(pgrep -f "ssh.*-L.*${DB_PORT}:localhost:${DB_PORT}.*${SSH_HOST}" | head -1)
         if [ -n "$SSH_PID" ]; then
             echo "$SSH_PID" > "$SSH_PID_FILE"
         fi

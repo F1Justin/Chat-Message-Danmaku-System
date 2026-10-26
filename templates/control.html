@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>弹幕控制台</title>
+    <title>{{ room_name }} · 弹幕控制台</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
@@ -943,7 +943,7 @@
         <header class="header">
             <div class="logo">
                 <div class="logo-icon">💬</div>
-                <span class="logo-text">弹幕控制台</span>
+                <span class="logo-text">{{ room_name }} · 弹幕控制台</span>
             </div>
             <div class="header-actions">
                 <button class="theme-toggle" id="theme-toggle" title="切换主题">
@@ -1204,7 +1204,8 @@
     };
     const appBasePath = {{ root_path | tojson }};
     const viewToken = {{ view_token | tojson }};
-    const withBasePath = (path) => `${appBasePath}${path}`;
+    const roomId = {{ room_id | tojson }};
+    const withBasePath = (path) => `${appBasePath}${path}?room=${encodeURIComponent(roomId)}`;
     
     // ============================================================
     // 日志系统
@@ -1214,10 +1215,13 @@
         const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
         const entry = document.createElement('div');
         entry.className = 'log-entry';
-        entry.innerHTML = `
-            <span class="log-time">${time}</span>
-            <span class="log-message ${type}">${message}</span>
-        `;
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'log-time';
+        timeSpan.textContent = time;
+        const messageSpan = document.createElement('span');
+        messageSpan.className = `log-message ${type}`;
+        messageSpan.textContent = message;
+        entry.append(timeSpan, messageSpan);
         dom.logContent.appendChild(entry);
         dom.logContent.scrollTop = dom.logContent.scrollHeight;
         
@@ -1231,7 +1235,10 @@
     // ============================================================
     
     function connectWebSocket() {
-        if (state.socket) state.socket.close();
+        if (state.socket) {
+            state.socket.onclose = null;
+            state.socket.close();
+        }
         
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const url = `${protocol}//${location.host}${withBasePath('/ws')}`;
@@ -1249,7 +1256,7 @@
             state.isConnected = false;
             updateConnectionUI(false);
             log(`连接已断开 (${e.code})`, 'warn');
-            setTimeout(connectWebSocket, 5000);
+            if (e.code !== 1008) setTimeout(connectWebSocket, 5000);
         };
         
         state.socket.onerror = () => log('WebSocket 连接错误', 'error');
@@ -1263,18 +1270,24 @@
             switch (data.type) {
                 case 'connection':
                     if (data.settings?.danmaku_speed) updateSpeedUI(data.settings.danmaku_speed);
+                    if (data.settings?.display?.maxDanmaku) dom.maxDanmaku.value = data.settings.display.maxDanmaku;
+                    if (data.settings?.display?.fontSize) dom.fontSize.value = data.settings.display.fontSize;
+                    break;
+                case 'source_status':
+                    state.sourceConnected = data.connected;
+                    updateConnectionUI(state.isConnected);
                     break;
                 case 'stats':
                     dom.statConnections.textContent = data.connections || 0;
                     break;
                 case 'danmaku':
                     state.messageCount++;
-                    if (state.isPreviewReady) {
-                        dom.previewFrame.contentWindow?.postMessage({ action: 'newDanmaku', message: data }, '*');
-                    }
                     break;
                 case 'broadcast_filter_update':
-                    log(`过滤器更新: ${data.filter_enabled ? '启用' : '禁用'}`);
+                    state.allowedGroups = data.allowed_groups || [];
+                    state.listenedIds = new Set(state.groups.filter(g => state.allowedGroups.includes(g.group_id)).map(g => g.id));
+                    renderGroups();
+                    log(`群选择已同步`);
                     break;
                 case 'setting_update':
                     if (data.key === 'danmaku_speed') updateSpeedUI(data.value);
@@ -1282,7 +1295,7 @@
                 case 'screen_clear_update':
                     updateScreenClearUI(data.enabled);
                     if (state.isPreviewReady) {
-                        dom.previewFrame.contentWindow?.postMessage({ action: 'setScreenClear', enabled: data.enabled }, '*');
+                        dom.previewFrame.contentWindow?.postMessage({ action: 'setScreenClear', enabled: data.enabled }, location.origin);
                     }
                     log(data.enabled ? '已进入清屏状态' : '已解除清屏');
                     break;
@@ -1312,7 +1325,7 @@
     
     function updateConnectionUI(connected) {
         dom.connectionBadge.classList.toggle('connected', connected);
-        dom.connectionText.textContent = connected ? '已连接' : '未连接';
+        dom.connectionText.textContent = !connected ? '连接已断开' : state.sourceConnected === false ? '消息源重连中' : '已连接';
     }
     
     // ============================================================
@@ -1328,6 +1341,7 @@
             
             if (data.status === 'success') {
                 state.groups = data.groups;
+                if (state.allowedGroups) state.listenedIds = new Set(state.groups.filter(g => state.allowedGroups.includes(g.group_id)).map(g => g.id));
                 renderGroups();
                 log(`加载了 ${data.groups.length} 个群聊`, 'success');
             } else {
@@ -1339,6 +1353,10 @@
         }
     }
     
+    const escapeHtml = (value) => String(value).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+
     function renderGroups() {
         let groups = [...state.groups];
         
@@ -1366,17 +1384,17 @@
         
         dom.groupList.innerHTML = groups.map(g => {
             const isListening = state.listenedIds.has(g.id);
-            const displayName = g.alias || `群 ${g.group_id}`;
+            const displayName = escapeHtml(g.alias || `群 ${escapeHtml(g.group_id)}`);
             
             return `
                 <div class="group-item ${isListening ? 'listening' : ''}" data-id="${g.id}">
                     <input type="checkbox" class="group-checkbox" ${isListening ? 'checked' : ''}>
                     <div class="group-info">
                     <div class="group-name">${displayName}</div>
-                        ${g.alias ? `<div class="group-id">${g.group_id}</div>` : ''}
+                        ${g.alias ? `<div class="group-id">${escapeHtml(g.group_id)}</div>` : ''}
                     </div>
                     <div class="group-actions">
-                        <button class="icon-btn edit-alias" data-groupid="${g.group_id}" data-alias="${g.alias || ''}" title="编辑别名">✏️</button>
+                        <button class="icon-btn edit-alias" data-groupid="${escapeHtml(g.group_id)}" data-alias="${escapeHtml(g.alias || '')}" title="编辑别名">✏️</button>
                         <button class="icon-btn favorite ${g.is_favorite ? 'active' : ''}" data-id="${g.id}" title="${g.is_favorite ? '取消收藏' : '收藏'}">
                             ${g.is_favorite ? '★' : '☆'}
                         </button>
@@ -1421,7 +1439,7 @@
                     } else {
             const names = Array.from(state.listenedIds).map(id => {
                 const g = state.groups.find(g => g.id === id);
-                return g ? (g.alias || `群${g.group_id}`) : id;
+                return escapeHtml(g ? (g.alias || `群${g.group_id}`) : id);
                 }).join(', ');
             
             dom.filterStatus.className = 'status-bar active';
@@ -1432,20 +1450,7 @@
     async function applyGroups() {
         const groups = Array.from(state.listenedIds);
         
-        send({ type: 'command', action: 'set_groups', filter_enabled: groups.length > 0, groups });
-        
-        if (state.isPreviewReady) {
-            const groupIds = groups.map(sid => {
-                const g = state.groups.find(g => g.id === sid);
-                return g?.group_id;
-            }).filter(Boolean);
-            
-            dom.previewFrame.contentWindow?.postMessage({
-                    action: 'setFilter',
-                enabled: groupIds.length > 0,
-                allowed_groups: groupIds
-                }, '*');
-        }
+        send({ type: 'command', action: 'set_groups', filter_enabled: true, groups });
         
         renderGroups();
     }
@@ -1530,7 +1535,7 @@
                     dom.previewFrame.contentWindow?.postMessage({
                         action: 'showRecentMessages',
                         messages: data.messages
-                    }, '*');
+                    }, location.origin);
                 }
                 log(`显示了 ${data.messages.length} 条最近消息`, 'success');
                 } else {
@@ -1562,7 +1567,7 @@
             dom.previewFrame.contentWindow?.postMessage({
                 action: 'updateSettings',
                 settings: { maxDanmaku, fontSize }
-            }, '*');
+            }, location.origin);
         }
         
         log('设置已应用', 'success');
@@ -1589,6 +1594,7 @@
     
     function initPreview() {
         const danmakuUrl = new URL(appBasePath ? `${location.origin}${appBasePath}/` : `${location.origin}/`);
+        danmakuUrl.searchParams.set('room', roomId);
         if (viewToken) danmakuUrl.searchParams.set('token', viewToken);
         dom.previewFrame.src = danmakuUrl.toString();
         dom.danmakuUrl.value = danmakuUrl.toString();
@@ -1642,14 +1648,7 @@
         
         $('#clear-listening').addEventListener('click', () => {
             state.listenedIds.clear();
-            send({ type: 'command', action: 'set_groups', filter_enabled: false, groups: [] });
-            if (state.isPreviewReady) {
-                dom.previewFrame.contentWindow?.postMessage({
-                    action: 'setFilter',
-                    enabled: false,
-                    allowed_groups: []
-                }, '*');
-            }
+            send({ type: 'command', action: 'set_groups', filter_enabled: true, groups: [] });
             renderGroups();
             log('已清除所有监听', 'success');
         });
@@ -1690,6 +1689,7 @@
         });
         
         window.addEventListener('message', (e) => {
+            if (e.origin !== location.origin || e.source !== dom.previewFrame.contentWindow) return;
             if (e.data?.type === 'previewReady') {
                 state.isPreviewReady = true;
                 log('预览框已就绪', 'success');

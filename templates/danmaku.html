@@ -94,6 +94,7 @@
         fontFamily: "'PingFang SC', 'Microsoft YaHei', sans-serif",
         fontWeight: 'bold',
         maxDanmaku: 150,
+        maxPendingAge: 10000, // Drop queued messages older than 10 seconds.
         speedSeconds: 10,  // 弹幕穿越屏幕的秒数
         
         // 轨道设置
@@ -154,6 +155,7 @@
             // 状态
             this.alive = true;
             this.createdAt = performance.now();
+            this.queuedAt = this.createdAt;
             
             // 固定弹幕的显示时间
             this.fixedDuration = options.fixedDuration || 5000;
@@ -359,6 +361,7 @@
                 return false;
             }
 
+            danmaku.createdAt = now; // Fixed duration starts when a track becomes available.
             danmaku.track = track;
             danmaku.x = (this.width - danmaku.width) / 2;
             if (position === 'top') {
@@ -390,6 +393,7 @@
 
             const remaining = [];
             for (const danmaku of this.pendingDanmakus) {
+                if (now - danmaku.queuedAt > Config.maxPendingAge) continue;
                 if (this.danmakus.length >= Config.maxDanmaku) {
                     remaining.push(danmaku);
                     continue;
@@ -531,19 +535,20 @@
     // WebSocket 客户端
     // ============================================================
     const appBasePath = {{ root_path | tojson }};
+    const roomId = {{ room_id | tojson }};
     
     class WebSocketClient {
         constructor(engine) {
             this.engine = engine;
             this.socket = null;
             this.reconnectAttempts = 0;
-            this.maxReconnectAttempts = 10;
+            this.maxReconnectAttempts = Infinity;
             this.reconnectDelay = 3000;
         }
         
         connect() {
             const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const url = `${protocol}//${location.host}${appBasePath}/ws`;
+            const url = `${protocol}//${location.host}${appBasePath}/ws?room=${encodeURIComponent(roomId)}`;
             
             console.log(`[WS] 连接到 ${url}`);
             this.socket = new WebSocket(url);
@@ -561,7 +566,7 @@
             this.socket.onclose = (event) => {
                 console.log(`[WS] 连接关闭: ${event.code}`);
                 this.updateConnectionStatus(false);
-                this.scheduleReconnect();
+                if (event.code !== 1008) this.scheduleReconnect();
             };
             
             this.socket.onerror = (error) => {
@@ -588,6 +593,7 @@
                         if (msg.settings?.danmaku_speed) {
                             this.engine.setSpeed(msg.settings.danmaku_speed);
                         }
+                        if (msg.settings?.display) this.applySettings(msg.settings.display);
                         break;
                         
                     case 'broadcast_filter_update':
@@ -633,7 +639,7 @@
             }
             
             this.reconnectAttempts++;
-            const delay = this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts - 1);
+            const delay = Math.min(30000, this.reconnectDelay * Math.pow(1.5, Math.min(20, this.reconnectAttempts - 1)));
             
             console.log(`[WS] ${delay}ms 后重连 (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
             
@@ -691,6 +697,7 @@
         
         // 监听来自控制面板的消息
         window.addEventListener('message', (event) => {
+            if (event.origin !== location.origin || event.source !== window.parent) return;
             const data = event.data;
             if (!data?.action) return;
             
@@ -735,7 +742,7 @@
         
         // 通知父窗口已准备好
         if (window.parent !== window) {
-            window.parent.postMessage({ type: 'previewReady' }, '*');
+            window.parent.postMessage({ type: 'previewReady' }, location.origin);
         }
         
         // 定期向父窗口报告状态
@@ -744,7 +751,7 @@
                 window.parent.postMessage({
                     type: 'danmakuStats',
                     count: engine.danmakus.length
-                }, '*');
+                }, location.origin);
             }
         }, 1000);
     });

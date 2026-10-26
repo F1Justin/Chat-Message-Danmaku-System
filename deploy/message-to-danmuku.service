@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+UMask=0077
 WorkingDirectory=/opt/message-to-danmuku
 EnvironmentFile=/opt/message-to-danmuku/.env
 ExecStart=/opt/message-to-danmuku/.venv/bin/python -m uvicorn app:app --host ${APP_HOST} --port ${APP_PORT}

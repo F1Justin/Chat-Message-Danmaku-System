@@ -4,6 +4,7 @@
 """
 
 import asyncio
+from collections import deque
 import json
 import logging
 import secrets
@@ -23,8 +24,12 @@ from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-from config import get_app_settings, get_db_settings, get_runtime_config
+from config import get_app_settings, get_db_settings
 from connection_manager import get_connection_manager
+from rooms import RuntimeProxy, broadcast_source, current_room, get_room, rooms
+from logging_utils import install_redaction
+
+install_redaction()
 
 # ============================================================
 # 配置初始化
@@ -32,7 +37,7 @@ from connection_manager import get_connection_manager
 
 settings = get_app_settings()
 db_settings = get_db_settings()
-runtime_config = get_runtime_config()
+runtime_config = RuntimeProxy()
 
 # 配置日志
 logging.basicConfig(
@@ -50,7 +55,7 @@ ROLE_ANONYMOUS = "anonymous"
 # 数据库配置
 # ============================================================
 
-engine = create_async_engine(db_settings.async_url, echo=False)
+engine = create_async_engine(db_settings.async_url, echo=False, pool_pre_ping=True)
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 Base = declarative_base()
@@ -128,75 +133,97 @@ class MessageListener:
     
     def __init__(self):
         self._connection: Optional[asyncpg.Connection] = None
-        self._running = False
-        self._manager = get_connection_manager()
-    
+        self._task = None
+        self._wake = asyncio.Event()
+        self._cursor = None
+        self._baseline = None
+        self._seen = set()
+        self._seen_order = deque()
+        self.connected = False
+
     async def start(self) -> None:
-        """启动监听器"""
-        if self._running:
-            logger.warning("监听器已在运行")
-            return
-        
-        try:
-            # 创建独立的数据库连接用于监听
-            self._connection = await asyncpg.connect(db_settings.dsn)
-            
-            # 注册监听器
-            await self._connection.add_listener("new_message", self._handle_notification)
-            
-            self._running = True
-            logger.info("PostgreSQL LISTEN/NOTIFY 监听器已启动")
-            
-        except Exception as e:
-            logger.error(f"启动监听器失败: {e}")
-            raise
-    
+        if self._task is None:
+            self._task = asyncio.create_task(self._run())
+
     async def stop(self) -> None:
-        """停止监听器"""
-        self._running = False
-        
-        if self._connection:
+        if self._task is not None:
+            self._task.cancel()
             try:
-                await self._connection.remove_listener("new_message", self._handle_notification)
-                await self._connection.close()
-                logger.info("监听器已停止")
-            except Exception as e:
-                logger.error(f"停止监听器时出错: {e}")
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+    def _notified(self, connection, pid, channel, payload):
+        self._wake.set()
+
+    async def _drain(self):
+        # Revisit the last 1000 IDs to cover nearby out-of-order commits.
+        # Cursor and deduplication survive database reconnects within this process.
+        rows = await self._connection.fetch(
+            "SELECT id FROM nonebot_plugin_chatrecorder_messagerecord_v2 "
+            "WHERE id > $1 ORDER BY id LIMIT 1500",
+            max(self._baseline, self._cursor - 1000),
+        )
+        previous = self._cursor
+        for row in rows:
+            message_id = row["id"]
+            if message_id not in self._seen:
+                await self._fetch_and_broadcast_message(message_id)
+                self._seen.add(message_id)
+                self._seen_order.append(message_id)
+                if len(self._seen_order) > 20000:
+                    self._seen.discard(self._seen_order.popleft())
+            self._cursor = max(self._cursor, message_id)
+        return len(rows) == 1500 and self._cursor > previous
+
+    async def _run(self):
+        delay = 1
+        while True:
+            try:
+                self._connection = await asyncpg.connect(db_settings.dsn, timeout=10)
+                await self._connection.add_listener("new_message", self._notified)
+                if self._cursor is None:
+                    self._cursor = await self._connection.fetchval(
+                        "SELECT COALESCE(MAX(id), 0) FROM nonebot_plugin_chatrecorder_messagerecord_v2"
+                    )
+                    self._baseline = self._cursor
+                self.connected = True
+                delay = 1
+                while True:
+                    self._wake.clear()
+                    if await self._drain():
+                        continue
+                    try:
+                        await asyncio.wait_for(self._wake.wait(), timeout=2)
+                    except asyncio.TimeoutError:
+                        pass
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("消息监听连接失败，%s 秒后重试", delay)
             finally:
-                self._connection = None
-    
-    async def _handle_notification(
-        self, 
-        connection: asyncpg.Connection,
-        pid: int,
-        channel: str,
-        payload: str
-    ) -> None:
-        """处理数据库通知"""
-        try:
-            data = json.loads(payload)
-            message_id = data.get("id")
-            session_persist_id = data.get("session_persist_id")
-            
-            logger.debug(f"收到新消息通知: id={message_id}, session={session_persist_id}")
-            
-            # 从数据库获取完整的消息信息
-            await self._fetch_and_broadcast_message(message_id)
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"解析通知负载失败: {e}, payload={payload}")
-        except Exception as e:
-            logger.error(f"处理通知时出错: {e}")
-    
+                self.connected = False
+                if self._connection is not None:
+                    try:
+                        await self._connection.close(timeout=3)
+                    except Exception:
+                        self._connection.terminate()
+                    self._connection = None
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30)
+
     async def _fetch_and_broadcast_message(self, message_id: int) -> None:
         """获取消息详情并广播"""
         async with async_session() as session:
             query = (
-                select(MessageRecord, UninfoSessionModel, SceneModel, UserModel)
+                select(MessageRecord, UninfoSessionModel, SceneModel, UserModel, BotModel)
                 .join(UninfoSessionModel, MessageRecord.session_persist_id == UninfoSessionModel.id)
                 .join(SceneModel, UninfoSessionModel.scene_persist_id == SceneModel.id)
                 .join(UserModel, UninfoSessionModel.user_persist_id == UserModel.id)
-                .where(MessageRecord.id == message_id)
+                .join(BotModel, SceneModel.bot_persist_id == BotModel.id)
+                .where(MessageRecord.id == message_id, SceneModel.scene_type == 1,
+                       MessageRecord.type == "message", MessageRecord.plain_text != "")
             )
             result = await session.execute(query)
             row = result.first()
@@ -205,7 +232,7 @@ class MessageListener:
                 logger.warning(f"未找到消息: id={message_id}")
                 return
             
-            message, session_model, scene_model, user_model = row
+            message, session_model, scene_model, user_model, bot_model = row
             
             # 处理消息内容
             content = self._process_content(message.plain_text)
@@ -217,17 +244,14 @@ class MessageListener:
                 message_time = message_time.replace(tzinfo=timezone.utc)
             
             # 缓存 session 映射
-            self._manager.cache_session_mapping(
-                str(session_model.id), 
-                str(scene_model.scene_id)
-            )
+
             
             # 广播弹幕
-            await self._manager.broadcast_danmaku(
+            await broadcast_source("nonebot", platform=bot_model.scope,
                 group_id=scene_model.scene_id,
                 user_id=user_model.user_id,
                 content=content,
-                message_id=message.message_id,
+                message_id=f"{bot_model.scope}:{bot_model.self_id}:{message.message_id}",
                 timestamp=message_time
             )
     
@@ -264,11 +288,8 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 50)
     logger.info("群聊弹幕系统启动中...")
     logger.info("=" * 50)
-    if not settings.admin_token:
-        logger.warning("ADMIN_TOKEN 未配置，控制台和 API 未启用鉴权；公网部署前必须设置")
-    elif not settings.require_view_token:
-        logger.info("弹幕页允许匿名访问；控制台和 API 需要 ADMIN_TOKEN")
-    
+    rooms()  # Validate room grants and credentials before accepting requests.
+
     # 启动消息监听器
     await message_listener.start()
     
@@ -284,7 +305,12 @@ async def lifespan(app: FastAPI):
     # 关闭
     logger.info("正在关闭...")
     stats_task.cancel()
+    try:
+        await stats_task
+    except asyncio.CancelledError:
+        pass
     await message_listener.stop()
+    await engine.dispose()
     logger.info("系统已关闭")
 
 
@@ -307,10 +333,13 @@ def _role_for_token(token: Optional[str]) -> Optional[str]:
     """返回 token 对应的权限角色。"""
     if not token:
         return None
-    if settings.admin_token and _constant_time_equals(token, settings.admin_token):
+    spec = get_room().spec
+    if _constant_time_equals(token, spec.admin_token):
         return ROLE_ADMIN
-    if settings.view_token and _constant_time_equals(token, settings.view_token):
+    if _constant_time_equals(token, spec.view_token):
         return ROLE_VIEW
+    if spec.ingest_token and _constant_time_equals(token, spec.ingest_token):
+        return "ingest"
     return None
 
 
@@ -328,10 +357,11 @@ def _request_auth(request: Request) -> tuple[str, Optional[str]]:
         if header_role:
             return header_role, None
 
-    cookie_token = request.cookies.get(settings.auth_cookie_name)
-    cookie_role = _role_for_token(cookie_token)
-    if cookie_role:
-        return cookie_role, None
+    for role in (ROLE_ADMIN, ROLE_VIEW):
+        cookie_token = request.cookies.get(_cookie_name(role))
+        cookie_role = _role_for_token(cookie_token)
+        if cookie_role == role:
+            return cookie_role, None
 
     return ROLE_ANONYMOUS, None
 
@@ -342,22 +372,24 @@ def _websocket_auth(websocket: WebSocket) -> str:
     if query_role:
         return query_role
 
-    cookie_token = websocket.cookies.get(settings.auth_cookie_name)
-    cookie_role = _role_for_token(cookie_token)
-    if cookie_role:
-        return cookie_role
+    for role in (ROLE_ADMIN, ROLE_VIEW):
+        cookie_token = websocket.cookies.get(_cookie_name(role))
+        cookie_role = _role_for_token(cookie_token)
+        if cookie_role == role:
+            return cookie_role
 
     return ROLE_ANONYMOUS
 
 
+def _cookie_name(role):
+    return f"{settings.auth_cookie_name}_{get_room().spec.id}_{role}"
+
+
 def _can_admin(role: str) -> bool:
-    # 未配置 ADMIN_TOKEN 时保持本地开发兼容；公网部署必须配置。
-    return not settings.admin_token or role == ROLE_ADMIN
+    return role == ROLE_ADMIN
 
 
 def _can_view(role: str) -> bool:
-    if not settings.require_view_token:
-        return True
     return role in {ROLE_ADMIN, ROLE_VIEW}
 
 
@@ -375,12 +407,15 @@ def _strip_auth_token(url: str) -> str:
 
 
 def _set_auth_cookie(response, request: Request, token: str) -> None:
+    if _role_for_token(token) == "ingest":
+        return
     forwarded_proto = request.headers.get("x-forwarded-proto")
     is_secure = (forwarded_proto or request.url.scheme) == "https"
     response.set_cookie(
-        key=settings.auth_cookie_name,
+        key=_cookie_name(_role_for_token(token)),
         value=token,
         max_age=60 * 60 * 24 * 30,
+        path=request.scope.get("root_path", "").rstrip("/") or "/",
         httponly=True,
         secure=is_secure,
         samesite="lax",
@@ -391,6 +426,28 @@ def _unauthorized(message: str = "Unauthorized") -> JSONResponse:
     return JSONResponse({"detail": message}, status_code=401)
 
 
+class RoomContextMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in {"http", "websocket"}:
+            return await self.app(scope, receive, send)
+        params = dict(parse_qsl(scope.get("query_string", b"").decode()))
+        room = rooms().get(params.get("room", "default"))
+        if room is None:
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
+            else:
+                await JSONResponse({"detail": "Room not found"}, status_code=404)(scope, receive, send)
+            return
+        token = current_room.set(room)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            current_room.reset(token)
+
+
 @app.middleware("http")
 async def access_control_middleware(request: Request, call_next):
     """限制来源并保护公网管理入口。"""
@@ -398,12 +455,20 @@ async def access_control_middleware(request: Request, call_next):
     if not _is_allowed_client(client_host):
         return JSONResponse({"detail": "Forbidden"}, status_code=403)
 
+    origin = request.headers.get("origin")
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and origin and urlsplit(origin).netloc != request.headers.get("host"):
+        return JSONResponse({"detail": "Origin forbidden"}, status_code=403)
     role, valid_query_token = _request_auth(request)
     path = request.scope.get("path", request.url.path)
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    if root_path and (path == root_path or path.startswith(root_path + "/")):
+        path = path[len(root_path):] or "/"
 
     if path == "/control" and not _can_admin(role):
         return _unauthorized("Admin token required")
-    if path.startswith("/api/") and not _can_admin(role):
+    if path == "/api/inject-danmaku" and role not in {ROLE_ADMIN, "ingest"}:
+        return _unauthorized("Ingest token required")
+    if path.startswith("/api/") and path != "/api/inject-danmaku" and not _can_admin(role):
         return _unauthorized("Admin token required")
     if path == "/" and not _can_view(role):
         return _unauthorized("View token required")
@@ -411,12 +476,19 @@ async def access_control_middleware(request: Request, call_next):
     if request.method == "GET" and valid_query_token:
         response = RedirectResponse(_strip_auth_token(str(request.url)), status_code=303)
         _set_auth_cookie(response, request, valid_query_token)
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Cache-Control"] = "no-store"
         return response
 
     response = await call_next(request)
     if valid_query_token:
         _set_auth_cookie(response, request, valid_query_token)
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
     return response
+
+
+app.add_middleware(RoomContextMiddleware)
 
 
 # ============================================================
@@ -425,11 +497,15 @@ async def access_control_middleware(request: Request, call_next):
 
 async def periodic_stats_broadcast():
     """定期广播统计信息"""
-    manager = get_connection_manager()
     while True:
         try:
             await asyncio.sleep(10)
-            await manager.broadcast_stats()
+            for room in rooms().values():
+                await room.manager.broadcast_stats()
+                await room.manager.broadcast_to_all({
+                    "type": "source_status", "connected": message_listener.connected
+                    if room.spec.source == "nonebot" else None,
+                })
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -441,7 +517,9 @@ async def periodic_stats_broadcast():
 # ============================================================
 
 async def get_group_id_from_session_id(session_id: str) -> Optional[str]:
-    """从 session_id 获取 group_id"""
+    """从房间授权平台的 session_id 获取 group_id。"""
+    if get_room().spec.source != "nonebot":
+        return str(session_id) if get_room().permits(session_id) else None
     manager = get_connection_manager()
     
     # 尝试从缓存获取
@@ -455,7 +533,8 @@ async def get_group_id_from_session_id(session_id: str) -> Optional[str]:
             query = (
                 select(SceneModel.scene_id)
                 .join(UninfoSessionModel, UninfoSessionModel.scene_persist_id == SceneModel.id)
-                .where(UninfoSessionModel.id == int(session_id))
+                .join(BotModel, SceneModel.bot_persist_id == BotModel.id)
+                .where(UninfoSessionModel.id == int(session_id), BotModel.scope == get_room().spec.platform)
             )
             result = await session.execute(query)
             group_id = result.scalar_one_or_none()
@@ -482,6 +561,10 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=1008, reason="Forbidden")
         return
 
+    origin = websocket.headers.get("origin")
+    if origin and urlsplit(origin).netloc != websocket.headers.get("host"):
+        await websocket.close(code=1008, reason="Origin forbidden")
+        return
     auth_role = _websocket_auth(websocket)
     if not _can_view(auth_role):
         await websocket.close(code=1008, reason="View token required")
@@ -496,10 +579,14 @@ async def websocket_endpoint(websocket: WebSocket):
             "type": "connection",
             "message": "连接成功",
             "settings": {
-                "danmaku_speed": runtime_config.danmaku_speed
+                "danmaku_speed": runtime_config.danmaku_speed,
+                "display": runtime_config.display_settings
             }
         })
         
+        await connection.send_json({"type": "source_status", "connected": message_listener.connected
+                                    if get_room().spec.source == "nonebot" else None})
+
         # 发送当前过滤状态
         await connection.send_json({
             "type": "broadcast_filter_update",
@@ -589,9 +676,16 @@ async def handle_set_groups(connection, message: dict, manager) -> None:
         if group_id and group_id not in target_group_ids:
             target_group_ids.append(group_id)
     
-    # 更新全局过滤器
-    manager.set_global_filter(filter_enabled, target_group_ids)
+    if any(not get_room().permits(g) for g in target_group_ids):
+        await connection.send_json({"type": "command_response", "action": "set_groups",
+                                    "status": "error", "message": "群聊未授权"})
+        return
+    # Empty selection means silence; room grants are never disabled.
+    manager.set_global_filter(True, target_group_ids)
     
+    runtime_config.selected_groups = manager.global_allowed_groups
+    runtime_config.save()
+
     # 发送响应
     await connection.send_json({
         "type": "command_response",
@@ -606,41 +700,10 @@ async def handle_set_groups(connection, message: dict, manager) -> None:
 
 
 async def handle_set_active_group(connection, message: dict) -> None:
-    """处理设置活跃群组"""
+    # Legacy command follows the same room-wide permission checks as the UI.
     session_id = message.get("group_id")
-    
-    if session_id:
-        group_id = await get_group_id_from_session_id(session_id)
-        if group_id:
-            connection.filter.enabled = True
-            connection.filter.allowed_groups = {str(group_id)}
-            runtime_config.active_group_id = group_id
-            runtime_config.save()
-            
-            await connection.send_json({
-                "type": "command_response",
-                "action": "set_active_group",
-                "status": "success",
-                "message": f"已设置监听群组: {group_id}",
-                "listened_groups": [group_id]
-            })
-        else:
-            await connection.send_json({
-                "type": "command_response",
-                "action": "set_active_group",
-                "status": "error",
-                "message": "无法获取群组ID"
-            })
-    else:
-        connection.filter.enabled = False
-        connection.filter.allowed_groups = set()
-        await connection.send_json({
-            "type": "command_response",
-            "action": "set_active_group",
-            "status": "success",
-            "message": "已清除群组监听",
-            "listened_groups": []
-        })
+    await handle_set_groups(connection, {"filter_enabled": True,
+                           "groups": [session_id] if session_id else []}, get_connection_manager())
 
 
 async def handle_get_active_group(connection) -> None:
@@ -686,7 +749,12 @@ async def handle_set_danmaku_speed(connection, message: dict, manager) -> None:
 async def handle_broadcast_settings(connection, message: dict, manager) -> None:
     """处理广播设置"""
     settings_payload = message.get("settings", {})
-    if isinstance(settings_payload, dict) and settings_payload:
+    bounds = {"maxDanmaku": (1, 1000), "fontSize": (12, 160)}
+    if (isinstance(settings_payload, dict) and settings_payload
+            and all(k in bounds and type(v) is int and bounds[k][0] <= v <= bounds[k][1]
+                    for k, v in settings_payload.items())):
+        runtime_config.display_settings.update(settings_payload)
+        runtime_config.save()
         await manager.broadcast_to_all({
             "type": "setting_update",
             "settings": settings_payload
@@ -709,6 +777,8 @@ async def handle_broadcast_settings(connection, message: dict, manager) -> None:
 async def handle_set_screen_clear(connection, message: dict, manager) -> None:
     """处理全局清屏/解除清屏。"""
     enabled = bool(message.get("enabled", False))
+    runtime_config.screen_cleared = enabled
+    runtime_config.save()
     manager.set_screen_cleared(enabled)
     await manager.broadcast_screen_clear_update()
     await connection.send_json({
@@ -729,7 +799,7 @@ async def read_root(request: Request):
     return templates.TemplateResponse(
         request,
         name="danmaku.html",
-        context={"request": request, "root_path": settings.root_path.rstrip("/")},
+        context={"request": request, "root_path": request.scope.get("root_path", "").rstrip("/"), "room_id": get_room().spec.id},
     )
 
 
@@ -741,21 +811,37 @@ async def control_panel(request: Request):
         name="control.html",
         context={
             "request": request,
-            "root_path": settings.root_path.rstrip("/"),
-            "view_token": settings.view_token if settings.require_view_token else None,
+            "root_path": request.scope.get("root_path", "").rstrip("/"),
+            "view_token": get_room().spec.view_token,
+            "room_id": get_room().spec.id,
+            "room_name": get_room().spec.name or get_room().spec.id,
         },
     )
+
+
+@app.get("/api/status")
+async def status():
+    return {"room": get_room().spec.id, "source": get_room().spec.source,
+            "database_connected": message_listener.connected if get_room().spec.source == "nonebot" else None,
+            "connections": get_room().manager.connection_count}
 
 
 @app.get("/api/groups", response_class=JSONResponse)
 async def get_groups():
     """获取群聊列表"""
+    if get_room().spec.source != "nonebot":
+        return {"status": "success", "groups": [
+            {"id": group, "group_id": group, "alias": runtime_config.group_aliases.get(group, ""),
+             "is_favorite": group in runtime_config.favorite_groups}
+            for group in get_room().spec.allowed_groups]}
     try:
         async with async_session() as session:
             query = (
                 select(UninfoSessionModel, SceneModel)
                 .join(SceneModel, UninfoSessionModel.scene_persist_id == SceneModel.id)
-                .where(SceneModel.scene_type == 1)
+                .join(BotModel, SceneModel.bot_persist_id == BotModel.id)
+                .where(SceneModel.scene_type == 1, BotModel.scope == get_room().spec.platform,
+                       SceneModel.scene_id.in_(get_room().spec.allowed_groups))
                 .order_by(UninfoSessionModel.id)
             )
             result = await session.execute(query)
@@ -782,7 +868,7 @@ async def get_groups():
             
     except Exception as e:
         logger.error(f"获取群聊列表出错: {e}")
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": "操作失败，请查看服务端日志"}
 
 
 @app.get("/api/recent-messages/{group_id}", response_class=JSONResponse)
@@ -794,21 +880,24 @@ async def get_recent_messages(group_id: str):
             group_id_query = (
                 select(SceneModel.scene_id)
                 .join(UninfoSessionModel, UninfoSessionModel.scene_persist_id == SceneModel.id)
-                .where(UninfoSessionModel.id == int(group_id))
+                .join(BotModel, SceneModel.bot_persist_id == BotModel.id)
+                .where(UninfoSessionModel.id == int(group_id), BotModel.scope == get_room().spec.platform)
             )
             result = await session.execute(group_id_query)
             actual_group_id = result.scalar_one_or_none()
             
-            if not actual_group_id:
+            if not actual_group_id or not get_room().permits(actual_group_id) or get_room().spec.source != "nonebot":
                 return {"status": "error", "message": "群聊不存在"}
             
             # 查询最近消息
             query = (
-                select(MessageRecord, SceneModel, UserModel)
+                select(MessageRecord, SceneModel, UserModel, BotModel)
                 .join(UninfoSessionModel, MessageRecord.session_persist_id == UninfoSessionModel.id)
                 .join(SceneModel, UninfoSessionModel.scene_persist_id == SceneModel.id)
                 .join(UserModel, UninfoSessionModel.user_persist_id == UserModel.id)
+                .join(BotModel, SceneModel.bot_persist_id == BotModel.id)
                 .where(
+                    BotModel.scope == get_room().spec.platform,
                     SceneModel.scene_type == 1,
                     SceneModel.scene_id == actual_group_id,
                     MessageRecord.type == "message",
@@ -822,7 +911,7 @@ async def get_recent_messages(group_id: str):
             messages = result.fetchall()
             
             message_list = []
-            for message, scene_model, user_model in reversed(messages):
+            for message, scene_model, user_model, bot_model in reversed(messages):
                 content = MessageListener._process_content(message.plain_text)
                 
                 # 统一时间格式
@@ -831,7 +920,7 @@ async def get_recent_messages(group_id: str):
                     msg_time = msg_time.replace(tzinfo=timezone.utc)
                 
                 message_list.append({
-                    "message_id": message.message_id,
+                    "message_id": f"{bot_model.scope}:{bot_model.self_id}:{message.message_id}",
                     "user_id": user_model.user_id,
                     "group_id": scene_model.scene_id,
                     "time": msg_time.isoformat(),
@@ -842,35 +931,57 @@ async def get_recent_messages(group_id: str):
             
     except Exception as e:
         logger.error(f"获取最近消息出错: {e}")
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": "操作失败，请查看服务端日志"}
 
 
 @app.post("/api/inject-danmaku", response_class=JSONResponse)
-async def inject_danmaku(data: Dict[str, Any] = Body(...)):
+async def inject_danmaku(request: Request, data: Dict[str, Any] = Body(...)):
     """从外部系统注入一条即时弹幕。"""
-    content = str(data.get("content") or "").strip()
+    if not isinstance(data.get("content"), str):
+        return JSONResponse({"detail": "Content must be text"}, status_code=400)
+    content = data["content"].strip()
     if not content:
         return JSONResponse({"status": "error", "message": "缺少弹幕内容"}, status_code=400)
 
+    room = get_room()
+    if (data.get("source", room.spec.source) != room.spec.source
+            or data.get("platform", room.spec.platform) != room.spec.platform
+            or data.get("kind", "message") != "message"):
+        return JSONResponse({"detail": "Source or event type not authorized"}, status_code=403)
+    role, _ = _request_auth(request)
+    if role == "ingest" and not data.get("message_id"):
+        return JSONResponse({"detail": "Stable message_id required"}, status_code=400)
     now = datetime.now(timezone.utc)
     message_id = str(data.get("message_id") or f"inject-{int(now.timestamp() * 1000)}")
     group_id = str(data.get("group_id") or "external")
     user_id = str(data.get("user_id") or "external")
+    if len(message_id) > 255 or len(user_id) > 128:
+        return JSONResponse({"detail": "Identifier too long"}, status_code=400)
+    if not get_room().permits(group_id):
+        return JSONResponse({"detail": "Group not authorized"}, status_code=403)
+    if len(content) > 2000:
+        return JSONResponse({"detail": "Content exceeds 2000 characters"}, status_code=400)
 
+    if message_id in room.ingested_ids:
+        return {"status": "success", "message_id": message_id, "sent": 0, "duplicate": True}
+    # Claim before awaiting broadcast, so concurrent retries cannot send twice.
+    room.ingested_ids[message_id] = None
+    if len(room.ingested_ids) > 20000:
+        room.ingested_ids.popitem(last=False)
     sent_count = await get_connection_manager().broadcast_danmaku(
         group_id=group_id,
         user_id=user_id,
         content=content,
         message_id=message_id,
         timestamp=now,
-        force=True,
+        force=False,
     )
 
     return {
         "status": "success",
         "message_id": message_id,
         "sent": sent_count,
-        "force": True,
+        "force": False,
     }
 
 
@@ -884,6 +995,8 @@ async def set_group_alias(data: Dict[str, Any] = Body(...)):
         if not group_id:
             return {"status": "error", "message": "缺少群ID参数"}
         
+        if not get_room().permits(group_id):
+            return JSONResponse({"detail": "Group not authorized"}, status_code=403)
         runtime_config.set_group_alias(group_id, alias)
         logger.info(f"设置群聊别名: 群ID={group_id}, 别名={alias}")
         
@@ -891,7 +1004,7 @@ async def set_group_alias(data: Dict[str, Any] = Body(...)):
         
     except Exception as e:
         logger.error(f"设置群聊别名出错: {e}")
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": "操作失败，请查看服务端日志"}
 
 
 @app.post("/api/favorite-group", response_class=JSONResponse)
@@ -904,13 +1017,16 @@ async def set_favorite_group(data: Dict[str, Any] = Body(...)):
         if not group_id:
             return {"status": "error", "message": "缺少群组ID"}
         
+        actual_group = await get_group_id_from_session_id(str(group_id))
+        if not actual_group or not get_room().permits(actual_group):
+            return JSONResponse({"detail": "Group not authorized"}, status_code=403)
         runtime_config.toggle_favorite(group_id, is_favorite)
         
         return {"status": "success", "message": "常用群组已更新"}
         
     except Exception as e:
         logger.error(f"设置常用群组出错: {e}")
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": "操作失败，请查看服务端日志"}
 
 
 # ============================================================

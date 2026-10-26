@@ -1,58 +1,22 @@
-# 中心部署说明
-
-推荐部署结构：
+# 中心部署与迁移
 
 ```text
-PostgreSQL 127.0.0.1:5432
-FastAPI    127.0.0.1:8000
-Cloudflare Tunnel / Caddy / Nginx -> 127.0.0.1:8000
+机器人／采集器 → PostgreSQL 127.0.0.1:5432
+                       ↓
+               FastAPI 127.0.0.1:8000
+                       ↓
+          Cloudflare Tunnel 或 Caddy / Nginx
+                       ↓ HTTPS / WSS
+              外部浏览器／OBS
 ```
 
-## 1. 准备应用
+展示电脑不建立 SSH 隧道、不连接 PostgreSQL。服务器可以保留 SSH 供维护使用。
 
-```bash
-cd /opt/message-to-danmuku
-python3 -m venv .venv
-.venv/bin/pip install -U pip setuptools wheel
-.venv/bin/pip install -r requirements.txt
-cp .env.example .env
-```
+## 新部署
 
-编辑 `.env`：
+按根目录 README 安装依赖、填写 `.env`、创建房间、安装数据库通知触发器。`rooms.json` 与 `room-state/` 必须能被服务运行用户读取／写入，建议目录权限 `0700`、凭据文件 `0600`。
 
-```env
-DB_HOST=127.0.0.1
-APP_HOST=127.0.0.1
-APP_PORT=8000
-ROOT_PATH=
-ADMIN_TOKEN=生成一个长随机字符串
-VIEW_TOKEN=生成另一个长随机字符串
-REQUIRE_VIEW_TOKEN=false
-```
-
-如果挂在反代子路径，例如 `https://example.com/danmuku/`，设置：
-
-```env
-ROOT_PATH=/danmuku
-```
-
-如果弹幕页也不希望公开观看，把 `REQUIRE_VIEW_TOKEN` 改为 `true`。
-
-Cloudflare Tunnel 场景下，`cloudflared` 到应用的来源地址可能不是 `127.0.0.1`，但应用仍然只监听本机。此时可以设置：
-
-```env
-ALLOWED_HOSTS=["*"]
-```
-
-## 2. 确认数据库触发器
-
-```bash
-psql -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" -f migrations/001_create_notify_trigger.sql
-```
-
-PostgreSQL 应只监听本机，不需要开放公网 5432。
-
-## 3. systemd
+systemd 模板默认工作目录为 `/opt/message-to-danmuku`。已有安装使用 `/home/justin/message-to-danmuku` 时保留实际路径，调整 `WorkingDirectory`、`EnvironmentFile` 和 `ExecStart` 后安装：
 
 ```bash
 sudo cp deploy/message-to-danmuku.service /etc/systemd/system/
@@ -61,41 +25,25 @@ sudo systemctl enable --now message-to-danmuku
 sudo systemctl status message-to-danmuku
 ```
 
-## 4. Caddy
+保持一个 worker。应用默认只监听 `127.0.0.1`，数据库不开放公网端口。`ALLOWED_HOSTS` 实际是客户端地址白名单；代理透传真实客户端 IP 时设为 `["*"]`，访问权限由房间令牌控制。
 
-把 `deploy/Caddyfile.example` 中的域名改成真实域名后合并到 Caddy 配置，然后重载：
+Cloudflare Tunnel 的 public hostname 指向 `http://127.0.0.1:8000`。网络不支持 QUIC 时可使用 `cloudflared tunnel --protocol http2`。使用 Caddy 时修改 `Caddyfile.example` 域名再合并到已有配置。
 
-```bash
-sudo caddy reload
-```
+子路径部署设置 `ROOT_PATH=/danmuku`，反向代理必须剥离此前缀再转发；创建房间时传 `--base-url https://example.com/danmuku`。页面、API、预览和 WebSocket 会保留房间参数及此前缀。
 
-访问：
+## 从原单房间版本迁移
 
-```text
-https://你的域名/?token=VIEW_TOKEN
-https://你的域名/control?token=ADMIN_TOKEN
-```
+1. 私有备份原应用、`.env` 和 `config.json`，记录当前选中的实际群 ID。
+2. 创建 `id=default` 的房间，写入明确的 `allowed_groups`，`platform` 保持现有 `QQClient`。若需保持原控制／观看链接有效，可在服务器本机将原 `ADMIN_TOKEN`、`VIEW_TOKEN` 写入该房间（均至少 32 字符且不能相同）；否则使用新生成链接。
+3. 原 `config.json` 可复制到 `room-state/default.json` 保留别名、收藏和速度。旧文件中的群选择不会扩大新白名单。
+4. 检查配置后重启服务，再检查控制台、观看端及真实消息上屏。撤销任一房间时移除配置并重启服务。
 
-首次带 token 访问会写入 HttpOnly Cookie，并跳转到不带 token 的 URL。
+没有 `rooms.json` 时，应用可从 `.env` 的 `ADMIN_TOKEN`、`VIEW_TOKEN`、`ALLOWED_GROUPS=["实际群ID"]` 建立 `default` 房间，原不带 `room` 的 URL 仍指向它。缺少令牌时无可访问房间；缺少白名单时不转发消息。旧 `REQUIRE_VIEW_TOKEN=false` 不再允许匿名观看。
 
-## 5. Cloudflare Tunnel
+多个房间启用后，原全局令牌不会自动获得所有房间权限。不得将原本全库可见的权限复制给外部使用者。扩展消息源通过对应房间的注入令牌接入，无需把数据库帐号交给展示端。
 
-推荐公网部署用 Cloudflare Tunnel，而不是开放应用端口。Cloudflare Tunnel 的 public hostname 指向：
+## 日志与回滚
 
-```text
-http://127.0.0.1:8000
-```
+首次认证链接带有令牌；不要启用包含完整查询串的代理访问日志。应用响应使用 `Referrer-Policy: no-referrer` 和 `Cache-Control: no-store`。反向代理仅信任本机代理的转发头。
 
-如果 QUIC/UDP 出站不稳定，可以让 systemd 中的 `cloudflared` 使用 HTTP/2：
-
-```text
-cloudflared --no-autoupdate tunnel --protocol http2 run --token ...
-```
-
-当前验证过的访问形态：
-
-```text
-https://danmuku.f1justin.com/
-https://danmuku.f1justin.com/control?token=ADMIN_TOKEN
-wss://danmuku.f1justin.com/ws
-```
+查看 `journalctl -u message-to-danmuku` 定位数据库重连；`/api/status?room=default` 需控制令牌。恢复旧程序时同步恢复旧配置；旧版本会重新启用原有全局权限语义，不能沿用新版的隔离保证。
